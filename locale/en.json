@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Background terminal",
+    "description": "Gives the agent a persistent interactive shell it can keep using across tool calls and model turns: incremental reads, stdin writes, interrupts, bounded waits, and an on-demand wake when a command finishes."
+  }
+}

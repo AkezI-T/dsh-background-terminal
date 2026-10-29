@@ -1,0 +1,56 @@
+{
+  "name": "dsh-background-terminal",
+  "version": "1.0.0",
+  "description": "DSH 后台终端：给 agent 一个跨工具调用、跨模型回合续用的持久交互 shell（Codex 语义）。",
+  "icon": "assets/icon.svg",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./assets/*": "./assets/*"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "locale",
+    "skills",
+    "tools",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test --experimental-test-isolation=none \"test/*.test.js\"",
+    "verify": "node tools/verify-wiring.mjs",
+    "check": "npm run verify && npm test"
+  },
+  "dependencies": {
+    "node-pty": "1.2.0-beta.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AkezI-T/dsh-background-terminal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AkezI-T/dsh-background-terminal/issues"
+  },
+  "homepage": "https://github.com/AkezI-T/dsh-background-terminal#readme",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "terminal",
+    "pty",
+    "persistent-shell",
+    "agent"
+  ],
+  "license": "MIT"
+}

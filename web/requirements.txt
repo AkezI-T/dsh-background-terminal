@@ -1,0 +1,2 @@
+# 验收页面的依赖：python web/app.py 之前先装它
+flask>=3.0

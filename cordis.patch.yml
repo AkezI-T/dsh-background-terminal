@@ -1,0 +1,30 @@
+# ============================================================================
+# dsh-background-terminal —— DSH bundle patch（插件的"挂载声明"）
+# ============================================================================
+# 本文件把插件插入 host 组合。工具注册是全局的，agent 会继承，不需要每个预设再列一遍；
+# 预设里若再挂一次，是为了给那个 agent 换一份 config（覆盖这里的值）。
+#
+# shellPath 可省略：省略时按 shellDialect 与平台自动发现（lib/shell-resolve.mjs）；
+# 显式给出则原样信任（运维的断言）。方言本身永不猜测——framing 是两套语法。
+# host 行缺 config 会让整个插件被判为"未激活"。
+#
+# 安装（本地开发安装）：
+#   dsh plugin --profile desktop add link:<本插件目录的绝对路径>
+# 或手工建立 junction（与其余 link 插件一致）：
+#   New-Item -ItemType Junction `
+#     -Path '<DSH_HOME>\profiles\desktop\node_modules\dsh-background-terminal' `
+#     -Target '<本插件目录的绝对路径>'
+# 首次安装后需要重启 DSH（新增 bundle 行不热加载）。
+#
+# 接线自检：node tools\verify-wiring.mjs（路径用参数或环境变量指定）
+# ============================================================================
+
+- insert:
+    # id 在同一组合里唯一：host 行用带后缀的 id，agent 平面的预设行用
+    # `background-terminal`。两者拿同一份 config。
+    - id: dsh-background-terminal-host
+      name: dsh-background-terminal
+      config:
+        # 省略 shellPath：按方言发现（用户级/机器级 pwsh 7 → PATH → 5.1 兜底）
+        shellDialect: pwsh
+        logLevel: debug
