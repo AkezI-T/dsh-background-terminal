@@ -38,7 +38,7 @@ DSH 的一次性命令是「提交 → 等它整个结束 → 拿结果」：中
 
 ### 安装
 
-在 DSH 里添加插件，输入包名 **`dsh-background-terminal`**（也接受本仓库地址或本地目录）。依赖解析、挂载、工具与技能注册都由 DSH 完成，不需要手工改 profile 或预设。
+在 DSH 里添加插件，输入本仓库地址 **`https://github.com/AkezI-T/dsh-background-terminal`**（也接受本地目录）。依赖解析、挂载、工具与技能注册都由 DSH 完成，不需要手工改 profile 或预设。
 
 重启 Host 后生效。
 
