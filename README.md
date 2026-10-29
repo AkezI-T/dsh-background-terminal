@@ -72,7 +72,7 @@ terminal_exec({ command, waitMs?: 10000, readCount?: 1, notifyOnExit?: false })
   └─ 尚未就绪   → { status: 'starting'|'startup-failed', commandSettled: false, waitExpired: false, … }
 ```
 
-**超时不是失败**：会话与命令都还在跑。看进展用 `terminal_state`，看输出用 `terminal_read`，换策略用 `terminal_signal`。
+**超时不是失败**：会话与命令都还在跑。窗口到期就是**把控制权还给你**——这段时间去做别的事，需要时用 `terminal_state` 看进展、`terminal_read` 读输出、`terminal_signal` 换策略；要命令结束时被叫醒就开 `notifyOnExit`。
 
 | 参数 | 默认 | 含义 |
 |---|---|---|
