@@ -42,12 +42,30 @@ terminal_state({ sessionId })
 
 | 场景 | 判断与操作 |
 |---|---|
-| Electron 构建、dev server、HMR | 保留同一会话观察启动和更新日志。应用健康或可见效果需要对应验证授权。插件默认剥离 `ELECTRON_RUN_AS_NODE`；自行设置环境时留意其影响 |
+| Electron 构建、dev server、HMR | 按下方说明清理 Electron 环境变量，保留同一会话观察启动和更新日志。应用健康或可见效果需要对应验证授权 |
 | 长程编译、构建 | 需要日志观察或中断时用终端；只需最终结果时用后台 Job。完成后核对退出码、任务成功日志和预期产物 |
 | 打开本地软件、运行构建进程 | 区分启动器和实际应用：启动器退出后应用可能仍运行。依据进程或应用状态判断启动结果，按授权决定是否继续观察或关闭 |
 | 远程大文件下载 | 需要进度或中断时用终端；只需最终文件时用后台 Job。先确认来源与目标路径，完成后核对下载命令结果、文件大小及来源提供的校验值 |
 
 长驻服务通过就绪日志与已获授权的独立健康检查确认启动。`ready` 表示 shell 就绪；`lastOutputAgoMs` 只表示距上次输出的时间。
+
+### Electron 启动与构建的环境变量
+
+DSH 宿主以 Electron-as-Node 模式运行时，环境中会带有 `ELECTRON_RUN_AS_NODE=1`，通常会传给子进程。Electron 继承后按 Node 模式运行，可能出现窗口不打开、Electron API 不可用，或调用 Electron 的构建与热更新流程失败。
+
+本插件默认 `node-pty` 后端已经剥离该变量。使用其他启动路径、启用 `passElectronRunAsNode: true`，或在 shell 中重新设置过变量时，启动 Electron 相关任务前，在**执行任务的同一个 shell** 中清除它：
+
+```powershell
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+npm run dev  # 替换为项目实际的启动或构建命令
+```
+
+```bash
+unset ELECTRON_RUN_AS_NODE
+npm run dev  # 替换为项目实际的启动或构建命令
+```
+
+清除变量后重新启动受影响的进程，使新进程继承更新后的环境。
 
 ## 读取与判读
 
