@@ -1,6 +1,6 @@
 {
   "name": "dsh-background-terminal",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "DSH 后台终端：给 agent 一个跨工具调用、跨模型回合续用的持久交互 shell（Codex 语义）。",
   "icon": "assets/icon.svg",
   "type": "module",

@@ -1,167 +1,211 @@
 # dsh-background-terminal
 
-给 DSH 的 agent 一个跨工具调用、跨模型回合续用的持久 shell。
+给 DSH Agent 一个跨工具调用、跨模型回合续用的持久交互式 shell。适合开发服务器、热更新观察、交互式程序，以及需要持续查看日志的长任务。
 
-一次调用开一个交互式 shell，首条命令写进 stdin；此后可反复读增量输出、写输入、中断前台命令后继续用同一个 shell，用完再关。
+一次启动后，可以读取增量输出、向进程输入内容、中断前台命令，并在同一个 shell 中继续执行下一条命令。工作目录和环境变量随会话保留。
 
-> **隔离等级**：默认后端直连 `node-pty`，这条会话的读 / 写 / 网络不受 ACL 沙箱约束。每个结果里的 `enforcement` 如实上报实际等级。
+> **权限边界**：默认 `node-pty` 后端直接派生 shell，具有宿主进程可用的文件与网络权限，不受 DSH 文件沙箱隔离。会话的 `workspace-write` 模式和工作目录检查不能限制后续命令的文件影响。实际隔离等级从 `terminal_state.enforcement` 查看；受限操作应使用具备相应隔离的工具。
 
-## 一、本插件是什么，解决了什么问题
+## 安装
 
-DSH 的一次性命令是「提交 → 等它整个结束 → 拿结果」：中间不能喂输入、不能中断，超时了也看不到进展。本插件给 agent 一个**活着的 shell**，把这三件事补上：
+在 DSH 的插件管理中添加仓库地址：
 
-| 能力 | 怎么做 |
-|---|---|
-| 向已启动的进程写输入 | `terminal_write` |
-| 中断前台命令后继续用同一个 shell | `terminal_signal`（`SIGINT`）|
-| 多次续读、不重复 | `terminal_read`（增量游标）|
-| 一次调用看到全部会话状态 | `terminal_state` |
-| 有界等待 / 命令结束时唤醒 | `waitMs` / `notifyOnExit` |
-
-判据只有一条：**这条命令会不会活着跨越你的下一步。**
-
-```
-秒级、要退出码        → bash / pwsh
-分钟级、只要最后结果  → run_in_background
-会一直活着，或要中途喂输入 / 中断后继续用 → terminal_*
+```text
+https://github.com/AkezI-T/dsh-background-terminal
 ```
 
-**三个动作**：
+也支持本地项目目录。依赖解析与 Bundle 挂载由 DSH 完成，安装结果中的生效状态与后续操作提示决定是否需要重启 Host。
 
-| 阶段 | 要解决的问题 |
+插件注册五个 `terminal_*` 工具；宿主提供 `skills` 服务时，还会注册随包技能 `background-terminal`。技能帮助 Agent 选择工具、管理会话和判读输出。
+
+## 什么时候使用
+
+| 任务 | 选择 |
 |---|---|
-| **发现终端** | 用哪个 shell？默认插件自己找；找不到时用 `shellPath` 指定。方言由配置决定，不猜 |
-| **挂起使用** | `terminal_exec` 起会话 → `terminal_read` 读 → `terminal_write` 喂 → `terminal_state` 看 |
-| **退出结束** | 命令结束 ≠ 会话结束；`terminal_signal({ close: true })` 收掉，容量才释放 |
+| 短命令，只需要结果与退出码 | 前台 `bash` / `pwsh` |
+| 一次性长任务，只需要最终结果 | 宿主提供的后台 Job 工具 |
+| Electron 开发服务器、watch / HMR、调试器、交互式安装器 | `terminal_exec` |
+| 本地软件或构建进程需要观察、交互或保留 shell 环境 | `terminal_exec`；启动器退出后另看应用状态 |
+| 远程大文件下载需要查看进度或中断 | `terminal_exec`；只需最终文件时用后台 Job |
+| 长任务需要持续观察日志、输入内容或中途中断 | `terminal_exec` |
+| 保留 shell 的工作目录、环境变量，继续下一条命令 | 带 `sessionId` 的 `terminal_exec` |
 
-## 二、本插件怎么用
+## 快速上手
 
-### 安装
+以下示例是 Agent 工具调用；`sessionId` 使用首次调用返回的值，`cwd` 使用项目绝对路径。开始前用 `terminal_state({})` 检查已有会话，优先复用适用的 shell，关闭已结束使用的会话。
 
-在 DSH 里添加插件，输入本仓库地址 **`https://github.com/AkezI-T/dsh-background-terminal`**（也接受本地目录）。依赖解析、挂载、工具与技能注册都由 DSH 完成，不需要手工改 profile 或预设。
+### 启动开发服务器并观察日志
 
-重启 Host 后生效。
+```js
+terminal_exec({
+  command: 'npm run dev',
+  cwd: '<项目绝对路径>',
+  label: '开发服务器',
+  waitMs: 10000
+})
 
-### 1. 发现终端
+terminal_read({ sessionId, waitMs: 10000 })
+terminal_state({ sessionId })
+```
 
-`shellPath` 省略时按 `shellDialect` 与平台解析，命中第一个即用：
+等待窗口结束后，服务器继续运行。就绪日志与服务健康检查共同确认应用已启动；`terminal_state.ready` 只表示 shell 已就绪。执行健康检查须遵循当前任务的验证授权。
 
-| 平台 / 方言 | 候选 |
+### 运行长任务，结束时通知 Agent
+
+```js
+terminal_exec({
+  command: 'npm run build',
+  cwd: '<项目绝对路径>',
+  label: '项目构建',
+  waitMs: 10000,
+  notifyOnExit: true
+})
+```
+
+命令在等待窗口内结束时，返回退出码和部分输出；仍在执行时，返回 `sessionId`，调用方可以推进其他工作，再按需读取进展。
+
+`notifyOnExit` 默认关闭。开启后，命令结束会向所属 Agent 发送通知；每个会话最多发送 8 次。既有会话续用时，省略此参数会沿用原值，传 `false` 可关闭通知。长驻服务的启动状态通过日志和健康检查判断，退出通知用于观察服务结束。
+
+### 输入、中断与继续执行
+
+```js
+// 回答交互程序的问题；newline 默认 true
+terminal_write({ sessionId, data: 'y' })
+
+// 中断前台命令，保留 shell
+terminal_signal({ sessionId, signal: 'SIGINT' })
+
+// 上一条命令正常结束后，继续使用同一个 shell
+terminal_exec({ sessionId, command: 'git status --short' })
+```
+
+中断可能使上一条命令的结束标记缺失。确认前台任务已停止、shell 可接收命令后，可显式放弃旧退出码并开始下一条命令：
+
+```js
+terminal_exec({ sessionId, command: 'git status --short', reset: true })
+```
+
+`reset` 只重建命令跟踪状态。前台程序的交互输入使用 `terminal_write`；下一条 shell 命令使用 `terminal_exec`。
+
+### 结束使用
+
+```js
+terminal_read({ sessionId })                 // 保存仍需使用的输出
+terminal_signal({ sessionId, close: true })  // 关闭整个会话
+terminal_state({ sessionId })               // 查看清理结果
+```
+
+每个 Agent 默认最多持有 4 个活动会话。命令结束后，shell 仍会占用容量；还有后续工作时可继续复用，任务完成后显式关闭。
+
+已结束的会话记录默认保留 5 分钟、每个 Agent 最多保留 4 条，便于继续读取结果。清理成功按会话状态判断；对服务进程的清理，按任务需要补充独立进程或端口证据。
+
+`cleanup-failed` 表示清理失败，进程可能仍存活，容量与模式切换围栏继续保留。可重试关闭；仍失败时报告状态与诊断信息，再决定后续操作。
+
+## 五个工具
+
+| 工具 | 用途 | 主要参数 |
+|---|---|---|
+| `terminal_exec` | 新建 shell，或在已有 shell 中执行下一条命令 | `command`、`sessionId`、`reset`、`cwd`、`label`、`waitMs`、`readCount`、`notifyOnExit`、`shellPath` |
+| `terminal_read` | 增量读取、等待新输出、只读查看尾部 | `sessionId`、`maxOutputChars`、`waitMs`、`peekTail` |
+| `terminal_write` | 向当前前台程序写输入 | `sessionId`、`data`、`newline` |
+| `terminal_signal` | 中断前台任务或关闭会话 | `sessionId`、`signal`、`close`、`reason` |
+| `terminal_state` | 查询当前 Agent 的会话快照 | `sessionId`；省略时列出活动与保留期会话 |
+
+`terminal_exec.waitMs` 默认 10000 ms、最大 30000 ms；启动阶段另有等待预算。`readCount` 默认 1、最大 20。`terminal_read.waitMs` 默认 0，最大 30000 ms。完整参数以宿主展示的工具 Schema 为准。
+
+## 状态与输出怎么读
+
+### 命令状态
+
+| 返回结果 | 含义与下一步 |
 |---|---|
-| Windows / `pwsh` | 用户级 PowerShell 7 → 机器级 PowerShell 7 → PATH 上的 `pwsh.exe` → Windows PowerShell 5.1 |
+| `status: completed / failed`，`commandSettled: true` | 收到命令结束标记，查看 `commandExitCode` 与输出 |
+| `status: running`，`waitExpired: true` | 等待窗口到期，可继续其他工作，稍后读日志或查状态 |
+| `status: starting`，两个布尔值均为 `false` | shell 尚在启动，继续查询或显式关闭 |
+| `status: startup-failed` | 启动失败，查看 `detail` 与 `diagnostics` |
+
+`phase` 描述会话生命周期。命令是否仍在执行，先看 `commandStateTrustworthy`，再看 `commandRunning`。SIGINT 或会话退出后，缺失结束标记的命令字段可能失去可信度。
+
+`commandGeneration` 标识同一会话中的命令代次；`reused: true` 表示复用了既有 shell。
+
+### 增量读取与尾部查看
+
+```js
+terminal_read({ sessionId, maxOutputChars: 16000 })
+terminal_read({ sessionId, peekTail: 2000 })
+```
+
+普通读取推进共享游标。`terminal_exec` 返回的内联输出也已经消费；后续读取从剩余部分继续。`peekTail` 查看当前保留的尾部，不推进游标；其预算在实现中按字节定位，多字节文本可能少于指定字符数。
+
+| 字段 | 判读 |
+|---|---|
+| `truncated` | 本次读取达到预算，后面还有内容 |
+| `lossy` / `gapBefore` | 较早输出已被有界缓冲覆盖 |
+| `nextCursor` | 清洗后输出流的绝对字节偏移 |
+| `unreadBytes` | 尚未消费的字节数；有覆盖时为上界 |
+| `outputBytes` | 累计原始 PTY 字节数，与清洗后游标使用不同口径 |
+| `outputFinal` | 会话输出已终结 |
+
+**当前缓冲已读尽**看 `unreadBytes: 0`；**整个会话输出完整读尽**要求 `outputFinal: true`、`lossy: false`、`unreadBytes: 0` 同时成立。持久 shell 继续运行时，命令可以已经结束，`outputFinal` 仍为 `false`。
+
+## Shell 与配置
+
+随包的 [挂载声明](cordis.patch.yml) 配置为 `shellDialect: pwsh`、`logLevel: debug`；[配置解析器](lib/config.mjs) 的默认值分别为 `bash`、`info`。在 Linux / macOS 部署时，需要将挂载配置的方言设为 `bash`。
+
+省略 `shellPath` 时，插件在挂载期按方言查找：
+
+| 平台 / 方言 | 查找顺序 |
+|---|---|
+| Windows / `pwsh` | 用户级 PowerShell 7 → 机器级 PowerShell 7 → PATH → Windows PowerShell 5.1 |
 | macOS / `bash` | `/bin/bash` → `/usr/local/bin/bash` → `/opt/homebrew/bin/bash` → PATH |
 | Linux / `bash` | `/bin/bash` → `/usr/bin/bash` → `/usr/local/bin/bash` → PATH |
 
-一个都不存在时**插件挂载失败**（`SHELL_NOT_FOUND`，列出试过的路径）。找不到时用别的工具查出来，传给新建会话：
+未找到 shell 时，插件挂载失败，错误列出尝试过的路径。应安装对应 shell 或在插件配置中指定 `shellPath`，再重新挂载。插件已经可用时，单次新建会话可通过 `shellPath` 覆盖路径；此路径必须绝对、存在且匹配已配置方言，同时要求 `allowShellOverride: true`。
 
-```powershell
-Get-Command pwsh | Select-Object -ExpandProperty Source    # 或：which bash
-terminal_exec({ command: '<命令>', shellPath: '<绝对路径>' })
-```
-
-`shellPath` 只在新建会话时有效，必须绝对路径、必须存在、必须与方言匹配。
-
-> Windows + ACL 沙箱下请用 `pwsh`，不要用 Git Bash（起不来，会在启动前被拒绝）；`danger-full-access` 除外。
-
-### 2. 挂起使用
-
-```js
-terminal_exec({ command, waitMs?: 10000, readCount?: 1, notifyOnExit?: false })
-  ├─ 窗口内跑完 → { status: 'completed'|'failed', commandSettled: true,  commandExitCode, output, … }
-  ├─ 窗口到期   → { status: 'running',              commandSettled: false, waitExpired: true,  … }
-  └─ 尚未就绪   → { status: 'starting'|'startup-failed', commandSettled: false, waitExpired: false, … }
-```
-
-**超时不是失败**：会话与命令都还在跑。窗口到期就是**把控制权还给你**——这段时间去做别的事，需要时用 `terminal_state` 看进展、`terminal_read` 读输出、`terminal_signal` 换策略；要命令结束时被叫醒就开 `notifyOnExit`。
-
-| 参数 | 默认 | 含义 |
+| 配置 | 解析器默认值 | 含义 |
 |---|---|---|
-| `waitMs` | 10000 | 等命令结束的上限，最大 30000 |
-| `readCount` | 1 | 窗口内结束时顺带回读几次输出，最大 20 |
-| `notifyOnExit` | false | 命令结束时唤醒调用方；常驻服务永远不结束，开了没用 |
-| `allowDangerous` | false | 覆盖危险命令减速带 |
+| `ptyBackend` | `node-pty` | 直连 PTY；`host` 则使用宿主终端派生服务 |
+| `maxSessionsPerAgent` | 4 | 每个 Agent 的活动会话上限 |
+| `maxBufferBytes` | 262144 | 清洗后输出缓冲上限，单位字节 |
+| `maxOutputChars` | 16000 | 单次读取的默认字符预算 |
+| `maxInputBytes` | 65536 | 单次输入字节上限 |
+| `settledRetainMs` | 300000 | 已结束记录的保留时间，单位毫秒 |
+| `allowShellOverride` | `true` | 允许新建会话覆盖 shell 路径 |
+| `cols` / `rows` | 120 / 30 | 终端尺寸，上限 500 / 200 |
+| `passElectronRunAsNode` | `false` | 默认剥离宿主的 `ELECTRON_RUN_AS_NODE` 环境变量 |
 
-`waitMs` 分档：秒级 6–10 秒；已知分钟级 15–20 秒；耗时未知 15 秒；常驻服务 15–25 秒。
+完整校验规则见 [配置解析器](lib/config.mjs)。
 
-**五个工具**
+## 已知限制
 
-| 工具 | 参数 |
-|---|---|
-| `terminal_exec` | `command`、`sessionId`、`reset`、`label`、`cwd`、`cols`、`rows`、`waitMs`、`readCount`、`notifyOnExit`、`allowDangerous`、`shellPath` |
-| `terminal_read` | `sessionId`、`maxOutputChars`、`waitMs`、`peekTail` |
-| `terminal_write` | `sessionId`、`data`、`newline` |
-| `terminal_signal` | `sessionId`、`signal`、`close`、`reason` |
-| `terminal_state` | `sessionId`（可选；省略则列出全部会话）|
+- **隔离**：直连后端使用宿主进程权限；`host` 后端在受限模式下要求沙箱 provider。当前实现还会在 Windows 受限策略下拒绝 Bash 方言。
+- **Windows 信号**：默认适配器通过 Ctrl+C 实现前台 `SIGINT`；前台 `SIGTERM` 不受支持。工具层的 `SIGKILL` 或 `close: true` 进入整个会话的关闭流程。
+- **中断证据**：信号已送达只证明写入已发生，任务是否停止需要结合独立证据判断。`reset` 会放弃旧命令的退出码。
+- **持久性**：shell 跨工具调用、模型回合存活；宿主重启后的会话恢复尚未实现。
+- **Shell 兼容性**：Windows PowerShell 5.1 缺少 `&&` / `||`；macOS 自带 Bash 3.2 缺少部分新语法。当前提供 Bash、PowerShell 两种方言。
+- **命令拦截**：危险命令检测覆盖 `terminal_exec`，`allowDangerous` 可显式覆盖；原始输入通道 `terminal_write` 直接写入。操作权限仍由任务授权决定。
+- **运行状态**：退出码、shell 就绪、日志静默分别反映不同事实。完成判定需结合任务产物、日志或服务健康状态。
 
-**续签**：带 `sessionId` 的 `terminal_exec` 在同一个 shell 里跑下一条命令，cwd / 环境 / REPL 状态都保住。上一条命令的帧没闭合时（典型：SIGINT），必须显式 `reset: true`，代价是放弃它的退出码。
+## 开发与验证
 
-**读全的判据**：`outputFinal: true` + `lossy: false` + `unreadBytes: 0`，三者同时成立。
+在仓库目录中运行冷测试：
 
-字段怎么读、常见坑的细节写在随包技能 `background-terminal` 里（agent 会自己加载）。
-
-### 3. 退出结束
-
-会话不会因为命令结束就消失：它继续占容量。任务做完：
-
-```js
-terminal_state({})                            // 列全
-terminal_signal({ sessionId, close: true })   // 逐条关
-terminal_state({})                            // 复核
-```
-
-关闭前先把未读输出读出来。`cleanup-failed` 表示清理没做成、进程可能还在：重试一次，仍失败就停下报告，或拿插件视野外的独立证据（进程树 / 端口 / 产物）才放行。
-
-### 配置
-
-| 字段 | 默认 | 含义 |
-|---|---|---|
-| `shellDialect` | `bash` | `bash` / `pwsh`；framing 两套语法 |
-| `shellPath` | 省略则自动发现 | 显式给出则原样信任 |
-| `allowShellOverride` | `true` | 是否允许 `terminal_exec` 的 `shellPath` 覆盖配置 |
-| `logLevel` | `info` | `silent` / `error` / `warn` / `info` / `debug` |
-| `ptyBackend` | `node-pty` | `node-pty` \| `host` |
-| `maxSessionsPerAgent` | 4 | 只计活动会话 |
-| `maxBufferBytes` | 262144 | ring 上限 |
-| `maxOutputChars` | 16000 | 单次读取上限 |
-| `cols` / `rows` | 120 / 30 | 上限 500 / 200 |
-| `passElectronRunAsNode` | `false` | 是否把 `ELECTRON_RUN_AS_NODE` 继承给持久 shell |
-
-完整配置项见 `lib/config.mjs`。
-
-## 三、别的一些说明
-
-### 隔离
-
-`ptyBackend: 'node-pty'`（默认）直连派生，**不经** `ctx.sandbox.confine`：工作区外写、读任意路径、联网都不受限。需要写入隔离时用官方 `bash` / `pwsh` / 文件工具。
-
-### 注意事项
-
-1. **超时不是失败**，只是把控制权还回来。
-2. **SIGINT 之后命令级字段会永久停在旧值**：看 `commandStateTrustworthy`，为 `false` 时不要用 `commandRunning`；要在这个 shell 里继续干活，用 `reset: true` 续签。
-3. **`phase: killed` 不等于进程已死**：看进程树 / 端口 / 产物。
-4. **命令结束默认没有推送**：要么 `notifyOnExit: true`，要么自己 `terminal_read` 探查；插件分不出「静默工作中」与「真卡死」。
-5. **剩余量只看 `unreadBytes`**：`outputBytes` 是原始 PTY 字节，不能与游标相减；`lossy: true` 时它只是上界。
-6. **`interrupt.state` 不会变成 `interrupted`**：插件没有「进程组已确认消失」的通道，真的停了没有要自己验。
-7. **Windows PowerShell 5.1 没有 `&&` / `||`**，用 `;` 串联；`shellFlavor` 会报 `windows-powershell-5.1`。
-8. **macOS 的 bash 是 3.2**，不支持 `${var,,}` 这类新语法；不提供 zsh 方言。
-9. **不要用 `terminal_write` 换命令**：它是裸输入，不建命令帧、没有退出码。
-
-### 测试
-
-在仓库克隆里跑：
-
-```powershell
+```bash
 npm test
 ```
 
-### 文件
+测试脚本使用 Node.js 的 `--experimental-test-isolation=none`，在同一进程中加载测试文件。冷测试不能替代真实 PTY、进程树清理或应用交互验证。
 
-完整模块划分见 `lib/`；三个辅助脚本在 `tools/`（接线自检、两个需要非受限环境的验收脚本）。
+| 入口 | 内容 |
+|---|---|
+| [Agent 操作技能](skills/background-terminal/SKILL.md) | 会话管理、输出判读与使用流程 |
+| [插件入口](lib/index.js) | 工具注册与宿主接线 |
+| [文档索引](docs/INDEX.md) | 设计、审查和历史验证记录 |
+| [接线检查](tools/verify-wiring.mjs) | 检查指定 profile、预设与 shell 配置 |
+| [PTY 探针](tools/probe-acceptance.mjs) / [插件验收](tools/acceptance-run.mjs) | 真实终端验收脚本，按独立验证授权执行 |
 
-### 技能
+当前行为以源码和本说明为准；历史审查、交接文档中的版本与验证结论须结合其适用代码确认。
 
-`skills/background-terminal/SKILL.md` 是给 agent 看的操作说明书，随插件注册，不需要手工安装。
+## 许可证
 
----
-
-MIT License。
+[MIT](LICENSE)
