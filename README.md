@@ -18,19 +18,6 @@ https://github.com/AkezI-T/dsh-background-terminal
 
 插件注册五个 `background_terminal_*` 工具；宿主提供 `skills` 服务时，还会注册随包技能 `background-terminal`。技能帮助 Agent 选择工具、管理会话和判读输出。
 
-## 团队中的终端选择
-
-Agent Teams 开启时，插件按宿主提供的团队状态与主、子 Agent 身份动态提供选择指引：
-
-| Agent | 新建持久终端时的优先选择 |
-|---|---|
-| 主 Agent | 官方 `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list`；本插件五个 `background_terminal_*` 接口继续可用，官方工具未提供时可使用本插件 |
-| 子 Agent | 本插件 `background_terminal_*` 工具 |
-
-已有终端继续使用创建它的工具组读取、输入、中断与关闭；两组工具的 `sessionId` 和参数各自独立。短命令仍使用 `bash` / `pwsh`，只需最终结果的一次性长任务使用后台 Job。
-
-团队关闭时撤下这段分工指引。该指引提供选择偏好，实际选择仍由 Agent 根据任务决定；工具权限沿用各自的检查与审批流程。
-
 ## 什么时候使用
 
 | 任务 | 选择 |

@@ -10,16 +10,6 @@ metadata:
 
 # 后台终端
 
-## 团队中的终端选择
-
-Agent Teams 开启时，按当前主、子 Agent 身份选择新建持久终端的工具：
-
-- 主 Agent 优先使用官方 `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list`。主 Agent 仍可按任务需要调用本插件全部 `background_terminal_*` 工具；官方工具未提供时可使用本插件。
-- 子 Agent 优先使用本插件 `background_terminal_*` 工具。
-- 已有终端继续使用创建它的工具组读取、输入、中断与关闭。两组工具的 `sessionId` 和参数各自独立。
-
-团队关闭时这条分工指引不适用。短命令使用 `bash` / `pwsh`，只需最终结果的一次性长任务使用后台 Job。操作权限按各工具的检查与审批流程处理。
-
 ## 开始前：权限与会话选择
 
 默认 `node-pty` 后端使用宿主进程权限，**不受会话文件沙箱隔离**。通过 `background_terminal_state.enforcement` 确认实际隔离等级。按任务授权执行命令；遇到沙箱拒绝时走上游审批通道，同一操作获批后重试。
