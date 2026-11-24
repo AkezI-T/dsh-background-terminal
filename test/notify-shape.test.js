@@ -19,12 +19,12 @@
  *
  * 通知文案：`background job <id> (<kind>: <label>) finished [status: <detail>]`。
  *
- * ## 关键区分：通知用的 detail 与 terminal_read 用的 detail **不是同一份字符串**
+ * ## 关键区分：通知用的 detail 与 background_terminal_read 用的 detail **不是同一份字符串**
  *
  * - 通知读的是 jobs 注册表里的 `detail`，来自 `settleJobs(record, outcome)` 的
  *   `outcome.detail`（**没有**追加诊断块）；
  * - `record.terminal.detail` 才带完整证据链（`withDiagnostics` 追加），供
- *   `terminal_read` / `terminal_state` 使用。
+ *   `background_terminal_read` / `background_terminal_state` 使用。
  *
  * 一开始我把两者当成同一份，据此以为"通知被诊断撑成了长文"——那是错的。
  * 这些用例锁住真实分工：通知一句话（含尾部线索 + 127 提示），诊断按需取。
@@ -119,7 +119,7 @@ function mount(opts = {}) {
   // 测试统一注入极短 `waitMs`（产品默认是有界等待 10s；假 PTY 的帧永不闭合）。
   // 调用方显式传 waitMs 时以调用方为准（有界等待的用例靠这个）。
   const call = (n, a) => tools.get(n).execute(
-    n === 'terminal_exec' ? { waitMs: 1, ...a } : a,
+    n === 'background_terminal_exec' ? { waitMs: 1, ...a } : a,
     { agent: owner },
   )
   return { tools, jobs, spawn, runtime, owner, call, wakes }
@@ -151,7 +151,7 @@ function noticeText(job) {
 /**
  * 通知 detail 的形态不变量。三条都是硬要求：
  *  · 单行 —— 宿主把它拼进 `[status: …, …]`（`dsh-tool-jobs/lib/index.js:45-46`）；
- *  · 无诊断块 —— 完整证据链走 `terminal_read` / `terminal_state` 按需取；
+ *  · 无诊断块 —— 完整证据链走 `background_terminal_read` / `background_terminal_state` 按需取；
  *  · 有界 —— 截断预算（`outputLimitBytes`）远大于诊断块，长文案不会被砍，只能靠它自己短。
  */
 function assertNoticeShape(detail, label) {
@@ -170,26 +170,26 @@ async function driveCleanupFailed() {
   const h = mount()
   const pty = makeFakePty()
   h.spawn.spawnTerminal = async (spec) => { h.spawn.spawnCalls.push(spec); return pty.handle }
-  const exec = await h.call('terminal_exec', { command: 'sleep 100' }, h.owner)
+  const exec = await h.call('background_terminal_exec', { command: 'sleep 100' }, h.owner)
   pty.emit(READY_BEACON + CRLF)
   await sleep(30)
   pty.failNextTerminate('terminal cleanup failed; surviving pid: 4242')
-  const closed = await h.call('terminal_signal', { sessionId: exec.sessionId, close: true }, h.owner)
+  const closed = await h.call('background_terminal_signal', { sessionId: exec.sessionId, close: true }, h.owner)
   return { h, exec, pty, closed }
 }
 
-test('N1 通知用的 detail 是短文案（诊断块只进 terminal_read/state）', async () => {
+test('N1 通知用的 detail 是短文案（诊断块只进 background_terminal_read/state）', async () => {
   // spawn 被宿主拒绝：走 spawn-failed 分支
   const h = mount({ spawnRejects: Object.assign(new Error('terminal spawn unsupported'), { code: 'SANDBOX_PTY_UNSUPPORTED' }) })
-  const exec = await h.call('terminal_exec', { command: 'echo hi' }, h.owner)
+  const exec = await h.call('background_terminal_exec', { command: 'echo hi' }, h.owner)
   assert.equal(exec.status, 'startup-failed')
 
   const job = [...h.jobs.values()][0]
   assert.ok(job.detail, 'job 必须有 detail（宿主用它渲染通知）')
-  // 通知里不得出现诊断块的分节标记——那是给 terminal_state 按需取的
+  // 通知里不得出现诊断块的分节标记——那是给 background_terminal_state 按需取的
   assertNoticeShape(noticeDetail(job), 'N1 正常失败')
 
-  // 对照：record.terminal.detail（terminal_read 用）**确实**带诊断 —— 证明两者不同源
+  // 对照：record.terminal.detail（background_terminal_read 用）**确实**带诊断 —— 证明两者不同源
   const rec = h.runtime.admission.listForOwner(h.owner)[0]
   assert.match(
     String(rec.terminal.detail),
@@ -202,7 +202,7 @@ test('N2 退出码 127 的通知带定向提示（一句话版）', async () => 
   const h = mount()
   const pty = makeFakePty()
   h.spawn.spawnTerminal = async (spec) => { h.spawn.spawnCalls.push(spec); return pty.handle }
-  const exec = await h.call('terminal_exec', { command: 'echo hi' }, h.owner)
+  const exec = await h.call('background_terminal_exec', { command: 'echo hi' }, h.owner)
 
   // 已就绪后以 127 退出 → natural-exit + exitCode 127
   pty.emit(READY_BEACON + CRLF)
@@ -225,27 +225,27 @@ test('N2 退出码 127 的通知带定向提示（一句话版）', async () => 
   assert.ok(!/windows-acl-run/.test(String(job.detail)), '长解释留给诊断块，不进通知')
 })
 
-test('N3 完整诊断经 terminal_state 按需取（含 argv）', async () => {
+test('N3 完整诊断经 background_terminal_state 按需取（含 argv）', async () => {
   const h = mount({ spawnRejects: Object.assign(new Error('terminal spawn unsupported by sandbox runner'), { code: 'SANDBOX_PTY_UNSUPPORTED' }) })
-  const exec = await h.call('terminal_exec', { command: 'echo hi' }, h.owner)
+  const exec = await h.call('background_terminal_exec', { command: 'echo hi' }, h.owner)
 
-  const state = await h.call('terminal_state', { sessionId: exec.sessionId }, h.owner)
+  const state = await h.call('background_terminal_state', { sessionId: exec.sessionId }, h.owner)
   assert.equal(state.phase, 'failed')
-  assert.ok(typeof state.diagnostics === 'string' && state.diagnostics.length > 0, '失败会话的 terminal_state 必须带诊断')
+  assert.ok(typeof state.diagnostics === 'string' && state.diagnostics.length > 0, '失败会话的 background_terminal_state 必须带诊断')
   assert.match(state.diagnostics, /argv:/, '诊断里必须有 confine 后的 argv')
   assert.match(state.diagnostics, /SANDBOX_PTY_UNSUPPORTED|terminal spawn unsupported/, '诊断里必须有宿主侧错误')
 })
 
-test('N4 成功会话的 terminal_state 不带诊断（不污染正常路径）', async () => {
+test('N4 成功会话的 background_terminal_state 不带诊断（不污染正常路径）', async () => {
   const h = mount()
   const pty = makeFakePty()
   h.spawn.spawnTerminal = async (spec) => { h.spawn.spawnCalls.push(spec); return pty.handle }
-  const exec = await h.call('terminal_exec', { command: 'echo hi' }, h.owner)
+  const exec = await h.call('background_terminal_exec', { command: 'echo hi' }, h.owner)
   pty.emit(READY_BEACON + CRLF)
   pty.emit('output\r\n')
   await sleep(40)
 
-  const state = await h.call('terminal_state', { sessionId: exec.sessionId }, h.owner)
+  const state = await h.call('background_terminal_state', { sessionId: exec.sessionId }, h.owner)
   assert.equal(state.phase, 'running')
   assert.equal(state.diagnostics, undefined, '运行中的会话不应附加诊断')
 })
@@ -267,18 +267,18 @@ test('N5 cleanup-failed 的通知 detail 也是单行短文案，诊断只留在
 
   // 对照：terminal 那份仍带完整诊断，且与通知那份同源（短文案 + 诊断后缀）
   const rec = h.runtime.admission.listForOwner(h.owner)[0]
-  assert.match(String(rec.terminal.detail), /\[bgterm diagnostics\]/, 'terminal_read 的 detail 必须仍带诊断')
+  assert.match(String(rec.terminal.detail), /\[bgterm diagnostics\]/, 'background_terminal_read 的 detail 必须仍带诊断')
   assert.ok(
     String(rec.terminal.detail).startsWith(`${job.detail}\n`),
     '通知那份必须是 terminal 那份去掉诊断后缀后的短文案（同源、两种形态）',
   )
 })
 
-test('N6 cleanup-failed 的完整诊断经 terminal_state / terminal_read 按需取（短化不丢证据）', async () => {
+test('N6 cleanup-failed 的完整诊断经 background_terminal_state / background_terminal_read 按需取（短化不丢证据）', async () => {
   const { h, exec, closed } = await driveCleanupFailed()
   assert.equal(closed.status, 'cleanup-failed', '前置条件：必须真的落到 cleanup-failed')
 
-  const state = await h.call('terminal_state', { sessionId: exec.sessionId }, h.owner)
+  const state = await h.call('background_terminal_state', { sessionId: exec.sessionId }, h.owner)
   assert.equal(state.phase, 'cleanup-failed')
   assert.equal(typeof state.diagnostics, 'string', 'cleanup-failed 必须能按需取到诊断')
   assert.match(state.diagnostics, /\[bgterm diagnostics\]/)
@@ -286,16 +286,16 @@ test('N6 cleanup-failed 的完整诊断经 terminal_state / terminal_read 按需
   assert.match(state.diagnostics, /^jobId: /m)
   assert.match(state.diagnostics, /^argv: /m, '诊断里必须有 confine 后的 argv')
 
-  // terminal_read 的 detail 同样带诊断（模型不调 terminal_state 也能读到证据链）
-  const read = await h.call('terminal_read', { sessionId: exec.sessionId }, h.owner)
+  // background_terminal_read 的 detail 同样带诊断（模型不调 background_terminal_state 也能读到证据链）
+  const read = await h.call('background_terminal_read', { sessionId: exec.sessionId }, h.owner)
   assert.equal(read.status, 'cleanup-failed')
-  assert.match(String(read.detail), /\[bgterm diagnostics\]/, 'terminal_read 的 detail 也必须带诊断')
+  assert.match(String(read.detail), /\[bgterm diagnostics\]/, 'background_terminal_read 的 detail 也必须带诊断')
 })
 
 test('N7 正常失败与 cleanup-failed 的通知形态一致，且都不靠 outputLimitBytes 截断兜底', async () => {
   // 路径 A：spawn 被宿主拒绝 → finish 的正常失败路径（outcome.detail）
   const a = mount({ spawnRejects: Object.assign(new Error('terminal spawn unsupported'), { code: 'SANDBOX_PTY_UNSUPPORTED' }) })
-  await a.call('terminal_exec', { command: 'echo hi' }, a.owner)
+  await a.call('background_terminal_exec', { command: 'echo hi' }, a.owner)
   const jobA = [...a.jobs.values()][0]
   assert.equal(jobA.status, 'failed', '路径 A 必须以 failed 结算')
 
@@ -333,7 +333,7 @@ async function readySession(h, command, execArgs = {}) {
     h.spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await h.call('terminal_exec', { command, ...execArgs }, h.owner)
+  const exec = await h.call('background_terminal_exec', { command, ...execArgs }, h.owner)
   pty.emit(READY_BEACON + CRLF)
   const deadline = Date.now() + 2000
   while (Date.now() < deadline && pty.writeCalls().length < 2) await sleep(20)
@@ -398,7 +398,7 @@ test('W4 消息必须是宿主认可的最小合法形状（四字段，一个�
   // 唤醒消息必须带上"命令结束了、退出码是多少、去哪读输出"这三件事
   assert.match(msg.content[0].text, /exit code 3/, '消息必须带退出码')
   assert.match(msg.content[0].text, new RegExp(exec.sessionId), '消息必须带会话 id')
-  assert.match(msg.content[0].text, /terminal_read/, '消息必须告诉调用方去哪读输出')
+  assert.match(msg.content[0].text, /background_terminal_read/, '消息必须告诉调用方去哪读输出')
 })
 
 test('W5 一条命令只唤醒一次；每次唤醒都是新的 message id', async () => {
@@ -426,7 +426,7 @@ test('W6 唤醒失败不得影响终端会话（通道是观测，不是产品�
 
   assert.equal(h.wakes.length, 0, 'followup 抛错 → 没有成功唤醒')
   assert.equal(record.pendingFrame, undefined, '帧必须已闭合（唤醒失败不回滚帧状态）')
-  const state = await h.call('terminal_state', { sessionId: exec.sessionId }, h.owner)
+  const state = await h.call('background_terminal_state', { sessionId: exec.sessionId }, h.owner)
   assert.equal(state.phase, 'running', '会话必须照常运行——唤醒失败绝不能影响终端本身')
 })
 test('W7 收口通知携带 endReason：自然收口 → endReason=natural（P1-NOTIFY-1）', async () => {
@@ -441,7 +441,7 @@ test('W7 收口通知携带 endReason：自然收口 → endReason=natural（P1-
   // 既有要求不得被削弱（W4 仍逐字段锁形状）：这里只补 endReason 这一条判据
   assert.match(text, /exit code 0/, '消息仍须带退出码')
   assert.match(text, new RegExp(exec.sessionId), '消息仍须带会话 id')
-  assert.match(text, /terminal_read/, '消息仍须告诉调用方去哪读输出')
+  assert.match(text, /background_terminal_read/, '消息仍须告诉调用方去哪读输出')
 })
 
 test('W8 取不到 lastCommand 时必须写 unknown，不得默认写 natural（源文本断言，局限见下）', async () => {

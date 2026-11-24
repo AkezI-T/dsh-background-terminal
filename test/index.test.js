@@ -175,10 +175,10 @@ function mountPlugin(opts = {}, rawConfig = { shellPath: SHELL, shellDialect: 'p
 function callTool(tools, name, args, owner) {
   const definition = tools.get(name)
   assert.ok(definition, `工具 ${name} 未注册`)
-  // 测试统一注入极短的 `waitMs`：`terminal_exec` 的**产品默认**是有界等待 10s，
+  // 测试统一注入极短的 `waitMs`：`background_terminal_exec` 的**产品默认**是有界等待 10s，
   // 而这些用例走的是假 PTY（不会真的执行命令，帧永不闭合），不注入就得每条等满 10s。
   // 有界等待本身由 T2c/T2d 专门验证；这里只需要"立刻把控制权还回来"。
-  const effective = name === 'terminal_exec' ? { waitMs: 1, ...args } : args
+  const effective = name === 'background_terminal_exec' ? { waitMs: 1, ...args } : args
   return definition.execute(effective, { agent: owner, signal: undefined })
 }
 
@@ -188,7 +188,7 @@ function callTool(tools, name, args, owner) {
 
 test('S1 四个工具全部注册，且 schema 里没有提权字段（E1）', () => {
   const { tools } = mountPlugin()
-  for (const name of ['terminal_exec', 'terminal_read', 'terminal_write', 'terminal_signal']) {
+  for (const name of ['background_terminal_exec', 'background_terminal_read', 'background_terminal_write', 'background_terminal_signal']) {
     assert.ok(tools.has(name), `缺少工具 ${name}`)
   }
   for (const [name, definition] of tools) {
@@ -220,7 +220,7 @@ test('S2f 能力矩阵在**启动前**拒绝不支持的方言（接线必须真
   )
   const owner = agentFor()
   await assert.rejects(
-    () => callTool(tools, 'terminal_exec', { command: 'echo hi' }, owner),
+    () => callTool(tools, 'background_terminal_exec', { command: 'echo hi' }, owner),
     (error) => {
       assert.match(error.message, /SHELL_UNSUPPORTED_IN_CONFINED_WINDOWS/, '必须报明确的能力错误码')
       assert.match(error.message, /pwsh/, '错误里必须给可操作替代方案')
@@ -295,7 +295,7 @@ test('I1 容量超限：spawnTerminal 调用次数为 0，且不注册 job', asy
     runtime.admission.reserve(owner, { command: 'x' })
   }
 
-  await assert.rejects(() => callTool(tools, 'terminal_exec', { command: 'ls' }, owner), /maxSessionsPerAgent=4/)
+  await assert.rejects(() => callTool(tools, 'background_terminal_exec', { command: 'ls' }, owner), /maxSessionsPerAgent=4/)
   assert.equal(spawn.spawnCalls.length, 0, '容量拒绝必须发生在 spawn 之前')
   assert.equal(jobs.size, before, '容量拒绝不得注册 job')
 })
@@ -303,17 +303,17 @@ test('I1 容量超限：spawnTerminal 调用次数为 0，且不注册 job', asy
 test('I2 confine 失败：spawnTerminal 为 0，预留已释放', async () => {
   const { tools: tools2, spawn: spawn2, runtime: runtime2, agentFor: agentFor2 } = mountPlugin({ confinement: false })
   const owner2 = agentFor2()
-  await assert.rejects(() => callTool(tools2, 'terminal_exec', { command: 'ls' }, owner2), /requires a ctx\.sandbox provider/)
+  await assert.rejects(() => callTool(tools2, 'background_terminal_exec', { command: 'ls' }, owner2), /requires a ctx\.sandbox provider/)
   assert.equal(spawn2.spawnCalls.length, 0, 'confine 失败必须发生在 spawn 之前')
   assert.equal(runtime2.admission.activeCount(owner2), 0, 'confine 失败必须释放预留')
 })
 
 test('I3 spawn 拒绝：返回 startup-failed（不再裸抛），无 PTY 收口、Job 结算为 failed', async () => {
-  // 契约变更（审阅 R001-02）：宿主明确拒绝创建 PTY 时，terminal_exec 返回
+  // 契约变更（审阅 R001-02）：宿主明确拒绝创建 PTY 时，background_terminal_exec 返回
   // `startup-failed` + 诊断证据，而不是抛一个裸错误让调用方去猜。
   const { tools, spawn, jobs, runtime, agentFor } = mountPlugin({ spawnRejects: new Error('pty exploded') })
   const owner = agentFor()
-  const result = await callTool(tools, 'terminal_exec', { command: 'ls' }, owner)
+  const result = await callTool(tools, 'background_terminal_exec', { command: 'ls' }, owner)
   assert.equal(result.status, 'startup-failed', '宿主拒绝创建 PTY 必须报 startup-failed，不是 starting，也不是裸抛')
   assert.equal(result.code, 'SANDBOX_PTY_START_FAILED')
   assert.match(String(result.diagnostics ?? ''), /pty exploded/, '诊断里必须能看到宿主侧的失败原因')
@@ -335,7 +335,7 @@ test('I3 spawn 拒绝：返回 startup-failed（不再裸抛），无 PTY 收口
 test('I5 受限模式下 spawn 收到的是 confine 返回的 argv（前缀包装形态）', async () => {
   const { tools, spawn, agentFor, runtime } = mountPlugin()
   const owner = agentFor()
-  await callTool(tools, 'terminal_exec', { command: 'echo hi' }, owner).catch(() => {})
+  await callTool(tools, 'background_terminal_exec', { command: 'echo hi' }, owner).catch(() => {})
   assert.equal(spawn.spawnCalls.length, 1, '应恰好触发一次 spawn')
   const spec = spawn.spawnCalls[0]
   assert.equal(spec.argv[0], 'runner', 'argv 必须是 confine 的包装结果')
@@ -364,7 +364,7 @@ test('I4 成功路径：spawnTerminal 恰好 1 次，首条命令经 stdin 写�
     return pty.handle
   }
 
-  await callTool(tools, 'terminal_exec', { command: 'echo hi' }, owner)
+  await callTool(tools, 'background_terminal_exec', { command: 'echo hi' }, owner)
   assert.equal(spawn.spawnCalls.length, 1, '成功路径 spawn 必须恰好一次')
 
   // 启动序列在发布时就写了（第 1 次）；信标到达后队列 flush（第 2 次）
@@ -394,7 +394,7 @@ test('T2b 命令级 framing：从 PTY 输出闭合帧 → 拿到命令退出码�
     return pty.handle
   }
 
-  const exec = await callTool(tools, 'terminal_exec', { command: 'npm run build' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'npm run build' }, owner)
   const ready = await makeReady(pty, runtime, owner)
   assert.ok(ready, '会话必须就绪')
 
@@ -435,7 +435,7 @@ test('T2b 命令级 framing：从 PTY 输出闭合帧 → 拿到命令退出码�
     spawn.spawnCalls.push(spec)
     return pty2.handle
   }
-  const exec2 = await callTool(tools, 'terminal_exec', { command: 'exit 3' }, owner)
+  const exec2 = await callTool(tools, 'background_terminal_exec', { command: 'exit 3' }, owner)
   await makeReady(pty2, runtime, owner)
   await until(() => pty2.writeCalls().length >= 2)
   const end2 = /__DSH_BGTERM_[0-9a-f-]+_E__/.exec(pty2.writeCalls()[1])[0]
@@ -458,7 +458,7 @@ function markersOfWritten(written) {
 
 test('T2c 有界等待：窗口内结束 → 直接返回 completed/failed + 退出码 + 输出', async () => {
   // 这是"有界等待"的核心契约：在 waitMs 内跑完就把结果直接交回来，
-  // 调用方一次调用就能拿到成功/失败并作出调整，不必再发一次 terminal_read。
+  // 调用方一次调用就能拿到成功/失败并作出调整，不必再发一次 background_terminal_read。
   const { tools, spawn, runtime, agentFor } = mountPlugin()
   const owner = agentFor()
   const pty = makeFakePty()
@@ -467,7 +467,7 @@ test('T2c 有界等待：窗口内结束 → 直接返回 completed/failed + 退
     return pty.handle
   }
 
-  const pending = callTool(tools, 'terminal_exec', { command: 'npm run build', waitMs: 5000 }, owner)
+  const pending = callTool(tools, 'background_terminal_exec', { command: 'npm run build', waitMs: 5000 }, owner)
   await makeReady(pty, runtime, owner)
   const flushed = await until(() => pty.writeCalls().length >= 2)
   assert.ok(flushed, '首条命令必须写入 stdin')
@@ -488,8 +488,8 @@ test('T2c 有界等待：窗口内结束 → 直接返回 completed/failed + 退
 
 test('T2d 有界等待：超时 → 返回 running 且**会话仍活着**（不是失败）', async () => {
   // 超时的语义是"把控制权还给调用方"，不是"命令失败"。
-  // 会话必须仍然活着——这正是持久终端独有的能力：稍后可以自己 terminal_read /
-  // terminal_state 看到底发生了什么，或者换策略。
+  // 会话必须仍然活着——这正是持久终端独有的能力：稍后可以自己 background_terminal_read /
+  // background_terminal_state 看到底发生了什么，或者换策略。
   const { tools, spawn, runtime, agentFor } = mountPlugin()
   const owner = agentFor()
   const pty = makeFakePty()
@@ -498,7 +498,7 @@ test('T2d 有界等待：超时 → 返回 running 且**会话仍活着**（不�
     return pty.handle
   }
 
-  const pending = callTool(tools, 'terminal_exec', { command: 'npm install', waitMs: 60 }, owner)
+  const pending = callTool(tools, 'background_terminal_exec', { command: 'npm install', waitMs: 60 }, owner)
   await makeReady(pty, runtime, owner)
   await until(() => pty.writeCalls().length >= 2)
   // 刻意不闭合帧（命令"还在跑"）→ 等到窗口超时
@@ -508,16 +508,16 @@ test('T2d 有界等待：超时 → 返回 running 且**会话仍活着**（不�
   assert.equal(result.commandRunning, true, '必须显式说明命令仍在跑')
   assert.equal(result.commandExitCode, undefined, '没跑完就不该有退出码')
   assert.match(String(result.note), /did not finish within waitMs=60/, '必须说明超时窗口')
-  assert.match(String(result.note), /terminal_state/, '必须告诉调用方怎么继续查')
+  assert.match(String(result.note), /background_terminal_state/, '必须告诉调用方怎么继续查')
 
   // 关键：会话本身仍然活着，且状态如实反映"命令在跑"
   const record = runtime.admission.listForOwner(owner)[0]
   assert.equal(record.phase, 'running', '超时后会话必须仍然 running（不是 failed）')
   assert.ok(record.pendingFrame !== undefined, '帧仍未闭合 = 命令确实还在跑')
 
-  const state = await callTool(tools, 'terminal_state', { sessionId: result.sessionId }, owner)
+  const state = await callTool(tools, 'background_terminal_state', { sessionId: result.sessionId }, owner)
   assert.equal(state.phase, 'running', '会话层面也是 running')
-  assert.equal(state.commandRunning, true, 'terminal_state 必须如实报告命令仍在跑')
+  assert.equal(state.commandRunning, true, 'background_terminal_state 必须如实报告命令仍在跑')
   assert.equal(state.lastCommandExitCode, null, '还没跑完 → 不得报退出码')
 })
 
@@ -542,10 +542,10 @@ test('S4 close 的 reason 不得被重复前缀（用户取消是完整句子）
       spawn.spawnCalls.push(spec)
       return pty.handle
     }
-    const exec = await callTool(tools, 'terminal_exec', { command: 'echo hi', waitMs: 1 }, owner)
+    const exec = await callTool(tools, 'background_terminal_exec', { command: 'echo hi', waitMs: 1 }, owner)
     await makeReady(pty, runtime, owner)
 
-    await callTool(tools, 'terminal_signal', { sessionId: exec.sessionId, close: true, reason }, owner)
+    await callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId, close: true, reason }, owner)
     const record = runtime.admission.listForOwner(owner).find((r) => r.id === exec.sessionId)
     const settled = await until(() => record.terminal?.detail !== undefined)
     assert.ok(settled, `reason=${reason} 时必须结算出 terminal.detail`)
@@ -565,7 +565,7 @@ test('DG6 危险命令在**预留之前**被拒：不 spawn、不占容量、不
   const owner = agentFor()
 
   await assert.rejects(
-    () => callTool(tools, 'terminal_exec', { command: 'rm -rf /', waitMs: 1 }, owner),
+    () => callTool(tools, 'background_terminal_exec', { command: 'rm -rf /', waitMs: 1 }, owner),
     (error) => {
       assert.equal(error.code, 'DANGEROUS_COMMAND_REFUSED', '必须有稳定错误码')
       assert.match(error.message, /NOT a security boundary/, '措辞不得声称这是安全边界')
@@ -590,7 +590,7 @@ test('DG7 allowDangerous: true 可覆盖（其余流程照常）', async () => {
 
   const exec = await callTool(
     tools,
-    'terminal_exec',
+    'background_terminal_exec',
     { command: 'rm -rf /', allowDangerous: true, waitMs: 1 },
     owner,
   )
@@ -607,7 +607,7 @@ test('T3 终态读取：退出码落到 terminal 视图，Jobs 以合法状态�
     return pty.handle
   }
 
-  const exec = await callTool(tools, 'terminal_exec', { command: 'false' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'false' }, owner)
   const ready = await makeReady(pty, runtime, owner)
   assert.ok(ready, 'shell 必须先就绪，否则下面的"自然退出"会被正确判成启动期失败')
 
@@ -622,7 +622,7 @@ test('T3 终态读取：退出码落到 terminal 视图，Jobs 以合法状态�
   assert.match(String(job.detail ?? ''), /exit code 3/)
 
   // 终态读取仍能拿到尾巴与退出码
-  const read = await callTool(tools, 'terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await callTool(tools, 'background_terminal_read', { sessionId: exec.sessionId }, owner)
   assert.equal(read.status, 'exited')
   assert.equal(read.exitCode, 3)
 })
@@ -639,13 +639,13 @@ test('IO2 单次输入超限：整笔拒绝且带稳定错误码', async () => {
     spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await callTool(tools, 'terminal_exec', { command: 'cat' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'cat' }, owner)
   pty.emit(READY_BEACON + CRLF)
   await until(() => runtime.admission.listForOwner(owner)[0]?.ready === true)
 
   const tooBig = 'a'.repeat(runtime.config.maxInputBytes + 1)
   await assert.rejects(
-    () => callTool(tools, 'terminal_write', { sessionId: exec.sessionId, data: tooBig }, owner),
+    () => callTool(tools, 'background_terminal_write', { sessionId: exec.sessionId, data: tooBig }, owner),
     (error) => error.code === 'INPUT_TOO_LARGE',
   )
   assert.equal(pty.writeCalls().length, 2, '被拒绝的输入不得落到 PTY（只有启动序列与首条命令两次写入）')
@@ -659,11 +659,11 @@ test('S1a SIGINT 不关会话：shell 保持 running，且信号打到前台进�
     spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await callTool(tools, 'terminal_exec', { command: 'sleep 100' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'sleep 100' }, owner)
   pty.emit(READY_BEACON + CRLF)
   await until(() => runtime.admission.listForOwner(owner)[0]?.ready === true)
 
-  const result = await callTool(tools, 'terminal_signal', { sessionId: exec.sessionId }, owner)
+  const result = await callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId }, owner)
   assert.equal(result.delivered, 'SIGINT')
   assert.equal(result.target, 'foreground-process-group')
   assert.equal(result.status, 'running', 'SIGINT 之后会话必须仍然 running')
@@ -680,11 +680,11 @@ test('S3 close: true 关闭整个会话并释放容量', async () => {
     spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await callTool(tools, 'terminal_exec', { command: 'sleep 100' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'sleep 100' }, owner)
   pty.emit(READY_BEACON + CRLF)
   await until(() => runtime.admission.listForOwner(owner)[0]?.ready === true)
 
-  const result = await callTool(tools, 'terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
+  const result = await callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
   assert.equal(result.target, 'session')
   assert.equal(result.status, 'killed')
   assert.equal(pty.state.terminated, 1, '关闭必须终止底层 PTY，且恰好一次')
@@ -699,12 +699,12 @@ test('C6 cleanup 失败：容量与围栏保留，重试成功后才释放，Job
     spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await callTool(tools, 'terminal_exec', { command: 'sleep 100' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'sleep 100' }, owner)
   pty.emit(READY_BEACON + CRLF)
   await until(() => runtime.admission.listForOwner(owner)[0]?.ready === true)
 
   pty.failNextTerminate('terminal cleanup failed; surviving pid: 4242')
-  const first = await callTool(tools, 'terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
+  const first = await callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
   assert.equal(first.status, 'cleanup-failed', '终止失败必须如实报 cleanup-failed')
   assert.equal(runtime.admission.activeCount(owner), 1, '清理失败时容量必须保留')
 
@@ -712,7 +712,7 @@ test('C6 cleanup 失败：容量与围栏保留，重试成功后才释放，Job
   const settledStatus = job.status
   assert.ok(['failed', 'killed'].includes(settledStatus), `job 必须已以合法状态结算，实得 ${settledStatus}`)
 
-  const second = await callTool(tools, 'terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
+  const second = await callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
   assert.equal(second.status, 'killed', '第二次清理应成功')
   assert.equal(runtime.admission.activeCount(owner), 0, '重试成功后必须释放容量')
   assert.equal(pty.state.terminated, 1, '两次尝试只应产生一次成功终止')
@@ -734,7 +734,7 @@ test('S3b 启动期崩溃：失败详情必须带上已捕获输出（真机排�
     return pty.handle
   }
 
-  const exec = await callTool(tools, 'terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'echo hi' }, owner)
   // shell 就绪（开始服役）之后、命令执行期间崩溃：
   // 先发信标（真实顺序：就绪 → 收命令 → 崩溃），再吐错误并退出。
   pty.emit(READY_BEACON + CRLF)
@@ -748,7 +748,7 @@ test('S3b 启动期崩溃：失败详情必须带上已捕获输出（真机排�
   })
   assert.ok(settled, 'shell 崩溃必须被收口')
 
-  const read = await callTool(tools, 'terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await callTool(tools, 'background_terminal_read', { sessionId: exec.sessionId }, owner)
   assert.equal(read.exitCode, 127)
   assert.match(String(read.detail ?? ''), /captured output/)
   assert.match(String(read.detail ?? ''), /windows-acl-run/)
@@ -759,9 +759,9 @@ test('S3b 启动期崩溃：失败详情必须带上已捕获输出（真机排�
 test('未知 sessionId 报错，不静默成功', async () => {
   const { tools, agentFor } = mountPlugin()
   const owner = agentFor()
-  await assert.rejects(() => callTool(tools, 'terminal_read', { sessionId: 'term-nope' }, owner), /unknown terminal session/)
-  await assert.rejects(() => callTool(tools, 'terminal_write', { sessionId: 'term-nope', data: 'x' }, owner), /unknown terminal session/)
-  await assert.rejects(() => callTool(tools, 'terminal_signal', { sessionId: 'term-nope' }, owner), /unknown terminal session/)
+  await assert.rejects(() => callTool(tools, 'background_terminal_read', { sessionId: 'term-nope' }, owner), /unknown terminal session/)
+  await assert.rejects(() => callTool(tools, 'background_terminal_write', { sessionId: 'term-nope', data: 'x' }, owner), /unknown terminal session/)
+  await assert.rejects(() => callTool(tools, 'background_terminal_signal', { sessionId: 'term-nope' }, owner), /unknown terminal session/)
 })
 
 test('S4 任意 OS signal 字符串被拒绝（只允许固定枚举）', async () => {
@@ -772,12 +772,12 @@ test('S4 任意 OS signal 字符串被拒绝（只允许固定枚举）', async 
     spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await callTool(tools, 'terminal_exec', { command: 'cat' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'cat' }, owner)
   pty.emit(READY_BEACON + CRLF)
   await until(() => runtime.admission.listForOwner(owner)[0]?.ready === true)
 
   await assert.rejects(
-    () => callTool(tools, 'terminal_signal', { sessionId: exec.sessionId, signal: 'SIGUSR1' }, owner),
+    () => callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId, signal: 'SIGUSR1' }, owner),
     /unknown signal/,
   )
 })
@@ -803,7 +803,7 @@ test('A2 cleanup-failed 期间容量与围栏都必须保留，重试成功后�
     return pty.handle
   }
 
-  const exec = await callTool(tools, 'terminal_exec', { command: 'sleep 100' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'sleep 100' }, owner)
   pty.emit(READY_BEACON + CRLF)
   await until(() => runtime.admission.listForOwner(owner)[0]?.ready === true)
 
@@ -814,7 +814,7 @@ test('A2 cleanup-failed 期间容量与围栏都必须保留，重试成功后�
   )
 
   pty.failNextTerminate('terminal cleanup failed; surviving pid: 4242')
-  const first = await callTool(tools, 'terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
+  const first = await callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
   assert.equal(first.status, 'cleanup-failed', '终止失败必须如实报 cleanup-failed')
   assert.equal(runtime.admission.activeCount(owner), 1, '清理失败时容量必须保留')
   assert.match(
@@ -823,7 +823,7 @@ test('A2 cleanup-failed 期间容量与围栏都必须保留，重试成功后�
     'cleanup-failed 仍计入活动：围栏不得放行（进程可能还在跑）',
   )
 
-  const second = await callTool(tools, 'terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
+  const second = await callTool(tools, 'background_terminal_signal', { sessionId: exec.sessionId, close: true }, owner)
   assert.equal(second.status, 'killed', '第二次清理应成功')
   assert.equal(runtime.admission.activeCount(owner), 0, '重试成功后必须释放容量')
   assert.equal(runtime.fence.shouldBlock(owner, 'danger-full-access'), undefined, '清理成功后围栏必须放行')
@@ -837,10 +837,10 @@ test('A3 工具入口必须返回 Promise：校验失败不得同步 throw', asy
   const owner = agentFor()
 
   const cases = [
-    ['terminal_exec', { command: '   ' }, /non-empty string/],
-    ['terminal_read', { sessionId: 'term-nope' }, /unknown terminal session/],
-    ['terminal_write', { sessionId: 'term-nope', data: 'x' }, /unknown terminal session/],
-    ['terminal_signal', { sessionId: 'term-nope' }, /unknown terminal session/],
+    ['background_terminal_exec', { command: '   ' }, /non-empty string/],
+    ['background_terminal_read', { sessionId: 'term-nope' }, /unknown terminal session/],
+    ['background_terminal_write', { sessionId: 'term-nope', data: 'x' }, /unknown terminal session/],
+    ['background_terminal_signal', { sessionId: 'term-nope' }, /unknown terminal session/],
   ]
   for (const [name, args, pattern] of cases) {
     const returned = tools.get(name).execute(args, { agent: owner, signal: undefined })
@@ -859,7 +859,7 @@ test('A4 首条命令队列：就绪前不落 stdin，就绪后恰好写入一�
     return pty.handle
   }
 
-  const exec = await callTool(tools, 'terminal_exec', { command: 'echo queued-once' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'echo queued-once' }, owner)
   assert.equal(exec.status, 'starting', '已发布但未就绪必须如实返回 starting，不能报 running')
 
   const beforeReady = pty.writeCalls()
@@ -868,7 +868,7 @@ test('A4 首条命令队列：就绪前不落 stdin，就绪后恰好写入一�
   assert.ok(!beforeReady.some((text) => /echo queued-once/.test(text)), '首条命令不得在就绪前落 stdin')
 
   // 未就绪时的输入进队列：不落 PTY，也不丢
-  const queued = await callTool(tools, 'terminal_write', { sessionId: exec.sessionId, data: 'later' }, owner)
+  const queued = await callTool(tools, 'background_terminal_write', { sessionId: exec.sessionId, data: 'later' }, owner)
   assert.deepEqual([queued.written, queued.queued], [false, true], '未就绪时写入必须先排队')
   assert.equal(pty.writeCalls().length, 1, '排队中的写入不得提前落 stdin')
 
@@ -886,7 +886,7 @@ test('A4 首条命令队列：就绪前不落 stdin，就绪后恰好写入一�
 test('A5 output end 必须真正 flush pump：等待中的读取在 EOF 立即醒来', async () => {
   // A-5 的修复是"在 output end 里 flush pump"。S3b 锁不住它（captured output 来自
   // ring，与 flush 无关）。这里让 done 永不落定，隔离出唯一一条通知路径：
-  // EOF → pump.flush() → sink.end() → 唤醒等待中的 terminal_read。
+  // EOF → pump.flush() → sink.end() → 唤醒等待中的 background_terminal_read。
   const { tools, spawn, runtime, agentFor } = mountPlugin()
   const owner = agentFor()
   const pty = makeFakePty()
@@ -896,16 +896,16 @@ test('A5 output end 必须真正 flush pump：等待中的读取在 EOF 立即�
     return pty.handle
   }
 
-  const exec = await callTool(tools, 'terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'echo hi' }, owner)
   pty.emit(READY_BEACON + CRLF)
   await until(() => runtime.admission.listForOwner(owner)[0]?.ready === true)
-  await callTool(tools, 'terminal_read', { sessionId: exec.sessionId }, owner) // 清空游标
+  await callTool(tools, 'background_terminal_read', { sessionId: exec.sessionId }, owner) // 清空游标
 
   pty.emit('tail-after-eof\r\n')
   await new Promise((resolve) => setTimeout(resolve, 20)) // 让尾部输出先落进 ring
 
   const startedAt = Date.now()
-  const pending = callTool(tools, 'terminal_read', { sessionId: exec.sessionId, waitMs: 1500 }, owner)
+  const pending = callTool(tools, 'background_terminal_read', { sessionId: exec.sessionId, waitMs: 1500 }, owner)
   pending.then(() => {}, () => {}) // 断言失败时不留未处理的拒绝
   await new Promise((resolve) => setTimeout(resolve, 30)) // 让等待中的 sink 挂上
   pty.endOutput() // EOF
@@ -933,7 +933,7 @@ test('A6 已发布、未就绪即崩（真实顺序：先 end 输出流，再落
     return pty.handle
   }
 
-  const exec = await callTool(tools, 'terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await callTool(tools, 'background_terminal_exec', { command: 'echo hi' }, owner)
   assert.equal(exec.status, 'starting')
 
   pty.endOutput()
@@ -947,7 +947,7 @@ test('A6 已发布、未就绪即崩（真实顺序：先 end 输出流，再落
   const settled = await until(() => TERMINAL_PHASES.has(runtime.admission.listForOwner(owner)[0]?.phase))
   assert.ok(settled, 'shell 崩溃必须被收口')
 
-  const read = await callTool(tools, 'terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await callTool(tools, 'background_terminal_read', { sessionId: exec.sessionId }, owner)
   assert.equal(read.status, 'failed', '起来就挂必须报 failed，不能报 exited（"跑完了"）')
   assert.match(String(read.detail ?? ''), /shell exited during startup/, '必须分类为启动期失败')
   assert.match(String(read.detail ?? ''), /exit code 127/)
@@ -980,7 +980,7 @@ test('A7 完成/就绪判定不得依赖 PTY activity 探测，完成只认结�
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 续签（terminal_exec 的 sessionId 形态）
+// 续签（background_terminal_exec 的 sessionId 形态）
 //
 // 一个会话只签发一条命令时，换命令就只剩新开 PTY 一条路（丢 cwd、丢环境、多占容量）。
 // 续签把"换一条命令"变成帧的第二次签发：退出码仍是硬事实，只是代次变了。
@@ -995,7 +995,7 @@ test('T2e 续签：sessionId 把新帧签发进既有会话，不重开 PTY', as
     return pty.handle
   }
 
-  const first = await callTool(tools, 'terminal_exec', { command: 'npm run build', waitMs: 100 }, owner)
+  const first = await callTool(tools, 'background_terminal_exec', { command: 'npm run build', waitMs: 100 }, owner)
   await makeReady(pty, runtime, owner)
   await until(() => pty.writeCalls().length >= 2)
   const firstWrite = pty.writeCalls()[1]
@@ -1010,7 +1010,7 @@ test('T2e 续签：sessionId 把新帧签发进既有会话，不重开 PTY', as
   const spawnsBefore = spawn.spawnCalls.length
   const second = await callTool(
     tools,
-    'terminal_exec',
+    'background_terminal_exec',
     { sessionId: first.sessionId, command: 'npm test', waitMs: 100 },
     owner,
   )
@@ -1040,19 +1040,19 @@ test('T2f 续签准入：帧未闭合必须显式 reset，reset 后才签发', a
     return pty.handle
   }
 
-  const first = await callTool(tools, 'terminal_exec', { command: 'sleep 60', waitMs: 100 }, owner)
+  const first = await callTool(tools, 'background_terminal_exec', { command: 'sleep 60', waitMs: 100 }, owner)
   await makeReady(pty, runtime, owner)
   await until(() => pty.writeCalls().length >= 2)
 
   await assert.rejects(
-    () => callTool(tools, 'terminal_exec', { sessionId: first.sessionId, command: 'echo hi', waitMs: 50 }, owner),
+    () => callTool(tools, 'background_terminal_exec', { sessionId: first.sessionId, command: 'echo hi', waitMs: 50 }, owner),
     /open command frame/,
     '帧还开着时不得静默续签：那会让上一代的事实凭空消失',
   )
 
   const afterReset = await callTool(
     tools,
-    'terminal_exec',
+    'background_terminal_exec',
     { sessionId: first.sessionId, command: 'echo hi', reset: true, waitMs: 100 },
     owner,
   )

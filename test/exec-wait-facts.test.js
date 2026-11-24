@@ -1,5 +1,5 @@
 /**
- * terminal_exec 六条返回路径的两个事实字段（P1-EXEC-1 / 文档 §2.1 D1）。
+ * background_terminal_exec 六条返回路径的两个事实字段（P1-EXEC-1 / 文档 §2.1 D1）。
  *
  * 契约：`commandSettled` 与 `waitExpired` 分开回答「这次调用为什么返回」——
  *   · 命令在等待窗口内结束（拿到真实的命令帧闭合，有命令级 exit code）
@@ -170,7 +170,7 @@ function assertFacts(result, expected, label) {
 async function startReady(h, args) {
   const pty = makeFakePty()
   usePty(h, pty)
-  const pending = h.call('terminal_exec', args)
+  const pending = h.call('background_terminal_exec', args)
   pty.emit(READY_BEACON + CRLF)
   const written = await until(() => pty.writeCalls().length >= 2)
   assert.ok(written, '驱动前提：信标之后 shell 应写入首条命令')
@@ -227,7 +227,7 @@ test('E4 路径4 已发布但 shell 未就绪 → starting，waitExpired=false',
   const pty = makeFakePty()
   usePty(h, pty)
   // 刻意不发就绪信标：PTY 已发布、shell 未就绪，启动观察窗走完
-  const result = await h.call('terminal_exec', { command: 'echo hi', waitMs: 1 })
+  const result = await h.call('background_terminal_exec', { command: 'echo hi', waitMs: 1 })
 
   assert.equal(result.status, 'starting', '未就绪 → starting')
   assertFacts(result, { commandSettled: false, waitExpired: false }, 'E4（启动未就绪不得算 waitExpired）')
@@ -237,7 +237,7 @@ test('E5 路径2 启动门超时（另一条 starting）→ waitExpired=false', 
   const h = mount({ startTimeoutMs: 60 })
   // 永不发布：startGate 不落定 → raceStart 超时。这条与 E4 是**两条不同的** starting 路径。
   h.spawn.spawnTerminal = () => new Promise(() => {})
-  const result = await withKeepAlive(h.call('terminal_exec', { command: 'echo hi', waitMs: 1 }))
+  const result = await withKeepAlive(h.call('background_terminal_exec', { command: 'echo hi', waitMs: 1 }))
 
   assert.equal(result.status, 'starting')
   // note 只用来区分是哪条 starting（文案差异是这两条路径唯一的可观测差别）
@@ -251,7 +251,7 @@ test('E5 路径2 启动门超时（另一条 starting）→ waitExpired=false', 
 
 test('E6 路径1 spawn 被宿主拒绝 → startup-failed，waitExpired=false', async () => {
   const h = mount({ spawnRejects: Object.assign(new Error('terminal spawn unsupported'), { code: 'SANDBOX_PTY_UNSUPPORTED' }) })
-  const result = await h.call('terminal_exec', { command: 'echo hi', waitMs: 1 })
+  const result = await h.call('background_terminal_exec', { command: 'echo hi', waitMs: 1 })
 
   assert.equal(result.status, 'startup-failed')
   assertFacts(result, { commandSettled: false, waitExpired: false }, 'E6')
@@ -261,7 +261,7 @@ test('E7 路径3 已发布但未就绪即死（宿主拒绝 PTY）→ startup-fa
   const h = mount({ startupGraceMs: 200 })
   const pty = makeFakePty()
   usePty(h, pty)
-  const pending = h.call('terminal_exec', { command: 'echo hi', waitMs: 1 })
+  const pending = h.call('background_terminal_exec', { command: 'echo hi', waitMs: 1 })
   await sleep(5)
   pty.exit(127, null) // 真机形态：exit 127 + 零输出
   const result = await pending
@@ -274,10 +274,10 @@ test('E7 路径3 已发布但未就绪即死（宿主拒绝 PTY）→ startup-fa
 // 说明面 + 源文本互斥扫描
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('E8 说明面：terminal_exec 的 description 讲清 status 与两个字段的分工', () => {
+test('E8 说明面：background_terminal_exec 的 description 讲清 status 与两个字段的分工', () => {
   const h = mount()
-  const description = h.tools.get('terminal_exec')?.description
-  assert.equal(typeof description, 'string', 'terminal_exec 必须注册且带说明')
+  const description = h.tools.get('background_terminal_exec')?.description
+  assert.equal(typeof description, 'string', 'background_terminal_exec 必须注册且带说明')
   assert.ok(description.includes('commandSettled'), '说明必须出现 commandSettled')
   assert.ok(description.includes('waitExpired'), '说明必须出现 waitExpired')
 

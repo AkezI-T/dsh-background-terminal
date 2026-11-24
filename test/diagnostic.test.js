@@ -37,7 +37,7 @@ async function until(predicate, tries = 200) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 插件级挂载：走真实的 toolExec → controller.begin → finish → terminal_read 链路
+// 插件级挂载：走真实的 toolExec → controller.begin → finish → background_terminal_read 链路
 // ─────────────────────────────────────────────────────────────────────────────
 
 function mountPlugin(opts = {}) {
@@ -92,7 +92,7 @@ function mountPlugin(opts = {}) {
     assert.ok(definition, `工具 ${name} 未注册`)
     // 测试统一注入极短 `waitMs`：产品默认是有界等待 10s，而这些用例走假 PTY
     // （帧永不闭合），不注入就得每条等满 10s。有界等待由 index.test.js 专门验证。
-    const effective = name === 'terminal_exec' ? { waitMs: 1, ...args } : args
+    const effective = name === 'background_terminal_exec' ? { waitMs: 1, ...args } : args
     return definition.execute(effective, { agent: owner, signal: undefined })
   }
 
@@ -103,7 +103,7 @@ function mountPlugin(opts = {}) {
 
 /** 起一个会话并等它真的就绪（served）。 */
 async function startReadySession(h, owner) {
-  const exec = await h.exec('terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await h.exec('background_terminal_exec', { command: 'echo hi' }, owner)
   h.spawn.lastPty.emit(`${READY_BEACON}\r\n`)
   const ready = await until(() => h.recordOf(owner)?.ready === true)
   assert.ok(ready, 'shell 必须先就绪，否则下面的用例会落到另一个分支')
@@ -172,19 +172,19 @@ test('D1b 未超限时不截断、不出现省略标记：完整 argv 原样保�
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// D2 / D3 / D4：失败与成功路径（插件级，经 terminal_read）
+// D2 / D3 / D4：失败与成功路径（插件级，经 background_terminal_read）
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('D2 exit 127：详情含 argv/pid/退出码/耗时 + RUNNER_FAILURE_EXIT 与 windows-acl-run 定向提示', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.exec('terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await h.exec('background_terminal_exec', { command: 'echo hi' }, owner)
 
   h.spawn.lastPty.exit(127, null)
   const settled = await until(() => h.recordOf(owner)?.phase === 'failed')
   assert.ok(settled, '起来就挂必须收口为 failed')
 
-  const read = await h.exec('terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await h.exec('background_terminal_read', { sessionId: exec.sessionId }, owner)
   const detail = String(read.detail ?? '')
 
   assert.equal(read.exitCode, 127)
@@ -220,7 +220,7 @@ test('D3 exit 0：成功路径不附加诊断，detail 保持原样', async () =
   const settled = await until(() => h.recordOf(owner)?.phase === 'exited')
   assert.ok(settled, '自然退出必须走完 finish')
 
-  const read = await h.exec('terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await h.exec('background_terminal_read', { sessionId: exec.sessionId }, owner)
   assert.equal(read.status, 'exited')
   assert.equal(read.detail, 'exit code 0', '成功路径 detail 必须一字不改（不附加诊断）')
   assert.ok(!String(read.detail).includes('[bgterm diagnostics]'))
@@ -238,14 +238,14 @@ test('D4 spawn 抛错：返回 startup-failed，详情含错误 code/message、a
   const owner = h.agentFor()
 
   // 契约变更（R001-02）：宿主拒绝创建 PTY 时返回 startup-failed + 诊断，而不是裸抛。
-  const result = await h.exec('terminal_exec', { command: 'echo hi' }, owner)
+  const result = await h.exec('background_terminal_exec', { command: 'echo hi' }, owner)
   assert.equal(result.status, 'startup-failed')
   assert.equal(result.code, SANDBOX_PTY_START_FAILED)
   assert.match(String(result.diagnostics ?? ''), /SANDBOX_PTY_UNSUPPORTED/, '必须带宿主侧的错误 code')
   const record = h.recordOf(owner)
   assert.ok(record, '失败的会话仍可查到')
 
-  const read = await h.exec('terminal_read', { sessionId: record.id }, owner)
+  const read = await h.exec('background_terminal_read', { sessionId: record.id }, owner)
   const detail = String(read.detail ?? '')
   assert.equal(read.status, 'failed')
   assert.match(detail, /code=SANDBOX_PTY_UNSUPPORTED/, '必须带错误 code')
@@ -257,9 +257,9 @@ test('D4 spawn 抛错：返回 startup-failed，详情含错误 code/message、a
   // 非恒真对照：换一个 code，详情必须跟着变
   const other = mountPlugin({ spawnRejects: Object.assign(new Error('nope'), { code: 'EACCES' }) })
   const otherOwner = other.agentFor()
-  const otherResult = await other.exec('terminal_exec', { command: 'echo hi' }, otherOwner)
+  const otherResult = await other.exec('background_terminal_exec', { command: 'echo hi' }, otherOwner)
   assert.equal(otherResult.status, 'startup-failed')
-  const otherDetail = String((await other.exec('terminal_read', { sessionId: other.recordOf(otherOwner).id }, otherOwner)).detail ?? '')
+  const otherDetail = String((await other.exec('background_terminal_read', { sessionId: other.recordOf(otherOwner).id }, otherOwner)).detail ?? '')
   assert.match(otherDetail, /code=EACCES/)
   assert.ok(!otherDetail.includes('SANDBOX_PTY_UNSUPPORTED'), 'code 不是写死的常量')
 })
@@ -271,13 +271,13 @@ test('D4 spawn 抛错：返回 startup-failed，详情含错误 code/message、a
 test('D5 耗时字段：假 PTY 控制 40ms，elapsed 反映真实经过时间', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.exec('terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await h.exec('background_terminal_exec', { command: 'echo hi' }, owner)
 
   await new Promise((r) => setTimeout(r, 40))
   h.spawn.lastPty.exit(127, null)
   await until(() => h.recordOf(owner)?.phase === 'failed')
 
-  const read = await h.exec('terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await h.exec('background_terminal_read', { sessionId: exec.sessionId }, owner)
   const match = String(read.detail ?? '').match(/elapsed=(\d+)ms \(spawn → exit\)/)
   assert.ok(match, '必须带 spawn → exit 的耗时字段')
   const elapsed = Number(match[1])
@@ -347,11 +347,11 @@ test('D6b 无证据时 render 返回 undefined：不制造空诊断块', () => {
 test('R001-06 失败详情带独立结构化字段（sessionId/jobId/policyMode/shellDialect/provider/exitCode/hostErrorId）', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.exec('terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await h.exec('background_terminal_exec', { command: 'echo hi' }, owner)
   h.spawn.lastPty.exit(127, null)
   await until(() => h.recordOf(owner)?.phase === 'failed')
 
-  const read = await h.exec('terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await h.exec('background_terminal_read', { sessionId: exec.sessionId }, owner)
   const detail = String(read.detail ?? '')
   assert.match(detail, new RegExp(`^sessionId: ${exec.sessionId}$`, 'm'))
   assert.match(detail, new RegExp(`^jobId: ${exec.jobId}$`, 'm'))
@@ -394,10 +394,10 @@ test('R001-02 classifyStartupOutcome 三态：starting / startup-failed / runnin
   assert.equal(classifyStartupOutcome(undefined), 'starting')
   assert.equal(classifyStartupOutcome({ get served() { throw new Error('boom') } }), 'starting')
 
-  // 集成层：spawn 被宿主拒绝时，terminal_exec 返回 startup-failed（R001-02 的对外契约）
+  // 集成层：spawn 被宿主拒绝时，background_terminal_exec 返回 startup-failed（R001-02 的对外契约）
   const h = mountPlugin({ spawnRejects: Object.assign(new Error('refused'), { code: 'SANDBOX_PTY_UNSUPPORTED' }) })
   const owner = h.agentFor()
-  const refused = await h.exec('terminal_exec', { command: 'echo hi' }, owner)
+  const refused = await h.exec('background_terminal_exec', { command: 'echo hi' }, owner)
   assert.equal(refused.status, 'startup-failed', '宿主拒绝必须对外报 startup-failed')
   assert.equal(refused.code, SANDBOX_PTY_START_FAILED)
   assert.equal(classifyStartupOutcome(h.recordOf(owner)), 'startup-failed')
@@ -433,7 +433,7 @@ test('R001-03 logEvent 每条日志都带 sessionId / jobId / phase 关联字段
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// D7 集成：启动期崩溃时 terminal_read 的 detail 必须含 argv（index.test.js S3b 的同款断言）
+// D7 集成：启动期崩溃时 background_terminal_read 的 detail 必须含 argv（index.test.js S3b 的同款断言）
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('D7 启动期崩溃（served 之后 exit 127）：detail 含 argv + 结构化字段 + 127 提示', async () => {
@@ -449,7 +449,7 @@ test('D7 启动期崩溃（served 之后 exit 127）：detail 含 argv + 结构�
   })
   assert.ok(settled, 'shell 崩溃必须被收口')
 
-  const read = await h.exec('terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await h.exec('background_terminal_read', { sessionId: exec.sessionId }, owner)
   const detail = String(read.detail ?? '')
   assert.equal(read.exitCode, 127)
   assert.match(detail, /argv: "windows-acl-run" "--"/, 'D7：detail 必须含 argv')
@@ -465,7 +465,7 @@ test('D7 启动期崩溃（served 之后 exit 127）：detail 含 argv + 结构�
   const okExec = await startReadySession(ok, okOwner)
   ok.spawn.lastPty.exit(0, null)
   await until(() => ok.recordOf(okOwner)?.phase === 'exited')
-  const okRead = await ok.exec('terminal_read', { sessionId: okExec.sessionId }, okOwner)
+  const okRead = await ok.exec('background_terminal_read', { sessionId: okExec.sessionId }, okOwner)
   assert.equal(okRead.detail, 'exit code 0')
 })
 
@@ -476,7 +476,7 @@ test('D7 启动期崩溃（served 之后 exit 127）：detail 含 argv + 结构�
 test('D8 输出尾部取自末尾：长输出崩溃时诊断给的是最后一段，而不是开头', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.exec('terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await h.exec('background_terminal_exec', { command: 'echo hi' }, owner)
 
   const head = 'HEAD_ONLY_TOKEN'
   const tail = 'TAIL_ONLY_TOKEN'
@@ -486,7 +486,7 @@ test('D8 输出尾部取自末尾：长输出崩溃时诊断给的是最后一�
 
   h.spawn.lastPty.exit(127, null)
   await until(() => h.recordOf(owner)?.phase === 'failed')
-  const read = await h.exec('terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await h.exec('background_terminal_read', { sessionId: exec.sessionId }, owner)
 
   // 只看诊断块：detail 前缀里的 captured output 是另一条既有路径（头部窗口）
   const detail = String(read.detail ?? '')

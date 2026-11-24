@@ -1,5 +1,5 @@
 /**
- * `terminal_state` 冷测试（lib/session-state.mjs + lib/index.js 的工具接线）。
+ * `background_terminal_state` 冷测试（lib/session-state.mjs + lib/index.js 的工具接线）。
  *
  * 全冷：假 PTY、假 jobs、假 ctx —— 不创建真实进程、不联网、不碰文件系统。
  * 集成用例一律显式 `ptyBackend: 'host'`：产品默认后端是 `node-pty`（直连真 PTY），
@@ -421,7 +421,7 @@ test('S1k 快照如实投影两个读侧字段，且绝不推进游标、绝不 
     publishedAt: 1_000,
     outputEnded: true,
     cursor,
-    // peek 会抛：投影层只许统计剩余量，读正文是 terminal_read 的事
+    // peek 会抛：投影层只许统计剩余量，读正文是 background_terminal_read 的事
     pump: { totalBytes: () => 1_000, peek() { throw new Error('投影层不得 peek') } },
   }
   const keysBefore = Object.keys(record).sort()
@@ -601,16 +601,16 @@ function mountPlugin(options = {}) {
       const definition = tools.get(name)
       assert.ok(definition, `工具 ${name} 未注册`)
       // 测试统一注入极短 `waitMs`（产品默认是有界等待 10s；假 PTY 的帧永不闭合）
-      const effective = name === 'terminal_exec' ? { waitMs: 1, ...args } : args
+      const effective = name === 'background_terminal_exec' ? { waitMs: 1, ...args } : args
       return definition.execute(effective, { agent: owner, signal: undefined })
     },
   }
 }
 
-test('S6 工具签名：terminal_state 已注册，sessionId 可选，无提权字段', () => {
+test('S6 工具签名：background_terminal_state 已注册，sessionId 可选，无提权字段', () => {
   const h = mountPlugin()
-  const definition = h.tools.get('terminal_state')
-  assert.ok(definition, 'terminal_state 必须注册')
+  const definition = h.tools.get('background_terminal_state')
+  assert.ok(definition, 'background_terminal_state 必须注册')
   assert.deepEqual(definition.parameters.required, undefined, 'sessionId 必须可选')
   assert.deepEqual(Object.keys(definition.parameters.properties), ['sessionId'])
   assert.equal(definition.parameters.properties.sandbox_permissions, undefined)
@@ -620,10 +620,10 @@ test('S6 工具签名：terminal_state 已注册，sessionId 可选，无提权�
 test('S7 单会话快照：running 会话的 pid/ready/elapsedMs/outputBytes/enforcement', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.call('terminal_exec', { command: 'npm run build' }, owner)
+  const exec = await h.call('background_terminal_exec', { command: 'npm run build' }, owner)
 
   // 未就绪时：ready=false，detail 不暴露（terminal.detail 还是 'starting' 占位）
-  const early = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const early = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(early.sessionId, exec.sessionId)
   assert.equal(early.jobId, exec.jobId)
   assert.equal(early.ready, false)
@@ -638,7 +638,7 @@ test('S7 单会话快照：running 会话的 pid/ready/elapsedMs/outputBytes/enf
   h.pty().emit('hello world')
   const counted = await until(() => h.record(owner)?.outputBytes === 11)
   assert.ok(counted, '假 PTY 的 11 字节必须进到记录里，否则下面断言的是别的东西')
-  const withOutput = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const withOutput = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(withOutput.outputBytes, 11, 'outputBytes 必须随真实输出变化')
   assert.equal(typeof withOutput.lastOutputAgoMs, 'number')
   assert.ok(withOutput.lastOutputAgoMs >= 0)
@@ -647,7 +647,7 @@ test('S7 单会话快照：running 会话的 pid/ready/elapsedMs/outputBytes/enf
   h.pty().emit(`${READY_BEACON}\r\n`)
   const ready = await until(() => h.record(owner)?.ready === true)
   assert.ok(ready, 'shell 必须就绪，否则本用例断言的是另一个状态')
-  const afterReady = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const afterReady = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(afterReady.ready, true)
   assert.equal(afterReady.detail, null, '仍在运行 → 不暴露 detail')
 })
@@ -657,36 +657,36 @@ test('S8 不传 sessionId：返回本 agent 的全部会话；别人的会话不
   const mine = h.agentFor('sess-mine')
   const other = h.agentFor('sess-other')
 
-  const first = await h.call('terminal_exec', { command: 'npm run build' }, mine)
-  const second = await h.call('terminal_exec', { command: 'sleep 1' }, other)
+  const first = await h.call('background_terminal_exec', { command: 'npm run build' }, mine)
+  const second = await h.call('background_terminal_exec', { command: 'sleep 1' }, other)
 
-  const list = await h.call('terminal_state', {}, mine)
+  const list = await h.call('background_terminal_state', {}, mine)
   assert.ok(Array.isArray(list.sessions), '不传 sessionId 返回快照数组（放在 sessions 字段里）')
   assert.deepEqual(list.sessions.map((s) => s.sessionId), [first.sessionId], '只列本 owner 的会话')
   assert.ok(!list.sessions.some((s) => s.sessionId === second.sessionId), '别人的会话绝不出现在列表里')
 
-  const otherList = await h.call('terminal_state', undefined, other)
+  const otherList = await h.call('background_terminal_state', undefined, other)
   assert.deepEqual(otherList.sessions.map((s) => s.sessionId), [second.sessionId])
 
   // 空列表不是错误：一个新 agent 自查应当得到空数组
   const fresh = h.agentFor('sess-fresh')
-  assert.deepEqual(await h.call('terminal_state', {}, fresh), { sessions: [] })
+  assert.deepEqual(await h.call('background_terminal_state', {}, fresh), { sessions: [] })
 })
 
 test('S9 未知 sessionId 抛错，不静默返回空', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  await assert.rejects(() => h.call('terminal_state', { sessionId: 'term-nope' }, owner), /unknown terminal session/)
+  await assert.rejects(() => h.call('background_terminal_state', { sessionId: 'term-nope' }, owner), /unknown terminal session/)
   // 别人的 sessionId 同样按"未知"处理（ownership 与 fence 语义一致）
   const other = h.agentFor('sess-other')
-  const exec = await h.call('terminal_exec', { command: 'ls' }, other)
-  await assert.rejects(() => h.call('terminal_state', { sessionId: exec.sessionId }, owner), /unknown terminal session/)
+  const exec = await h.call('background_terminal_exec', { command: 'ls' }, other)
+  await assert.rejects(() => h.call('background_terminal_state', { sessionId: exec.sessionId }, owner), /unknown terminal session/)
 })
 
 test('S10 终态会话仍可查：phase/exitCode/detail 如实（保留期内）', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.call('terminal_exec', { command: 'false' }, owner)
+  const exec = await h.call('background_terminal_exec', { command: 'false' }, owner)
   h.pty().emit(`${READY_BEACON}\r\n`)
   await until(() => h.record(owner)?.ready === true)
 
@@ -694,7 +694,7 @@ test('S10 终态会话仍可查：phase/exitCode/detail 如实（保留期内）
   const exited = await until(() => h.record(owner)?.phase === 'exited')
   assert.ok(exited, '自然退出必须走完 finish')
 
-  const snapshot = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const snapshot = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(snapshot.phase, 'exited')
   assert.equal(snapshot.exitCode, 3)
   assert.ok(String(snapshot.detail).startsWith('exit code 3'), `落定后 detail 才是真结论，实得：${snapshot.detail}`)
@@ -710,15 +710,15 @@ test('S10 终态会话仍可查：phase/exitCode/detail 如实（保留期内）
 test('S11 enforcement 端到端：danger-full-access 必须报 unconfined（防"假称有沙箱"）', async () => {
   const confined = mountPlugin()
   const confinedOwner = confined.agentFor()
-  const confinedExec = await confined.call('terminal_exec', { command: 'ls' }, confinedOwner)
-  const confinedState = await confined.call('terminal_state', { sessionId: confinedExec.sessionId }, confinedOwner)
+  const confinedExec = await confined.call('background_terminal_exec', { command: 'ls' }, confinedOwner)
+  const confinedState = await confined.call('background_terminal_state', { sessionId: confinedExec.sessionId }, confinedOwner)
   assert.equal(confinedState.enforcement, ENFORCEMENT.CONFINED)
   assert.equal(confined.spawn.spawnCalls[0].argv[0], 'runner', 'confined 会话的 argv 必须经 confine 包装')
 
   const open = mountPlugin({ policyMode: 'danger-full-access' })
   const openOwner = open.agentFor()
-  const openExec = await open.call('terminal_exec', { command: 'ls' }, openOwner)
-  const openState = await open.call('terminal_state', { sessionId: openExec.sessionId }, openOwner)
+  const openExec = await open.call('background_terminal_exec', { command: 'ls' }, openOwner)
+  const openState = await open.call('background_terminal_state', { sessionId: openExec.sessionId }, openOwner)
   assert.equal(openState.enforcement, ENFORCEMENT.UNCONFINED, 'danger-full-access 绝不是 confined')
   assert.equal(open.spawn.spawnCalls[0].argv[0], SHELL, 'danger-full-access 不经 confine，argv 是裸 shell')
 
@@ -729,7 +729,7 @@ test('S11 enforcement 端到端：danger-full-access 必须报 unconfined（防"
 test('S12 只读：调用前后记录不变，读取游标也不被推进', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.call('terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await h.call('background_terminal_exec', { command: 'echo hi' }, owner)
   h.pty().emit(`${READY_BEACON}\r\nhello\r\n`)
   await until(() => h.record(owner)?.ready === true)
 
@@ -750,17 +750,17 @@ test('S12 只读：调用前后记录不变，读取游标也不被推进', asyn
   })
   const before = projection()
 
-  const snapshot = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const snapshot = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(snapshot.phase, record.phase)
 
-  assert.deepEqual(projection(), before, 'terminal_state 不得修改记录的任何字段（含键集合）')
+  assert.deepEqual(projection(), before, 'background_terminal_state 不得修改记录的任何字段（含键集合）')
 
   // 游标不被推进：先读一次，再取状态，再读一次必须是空的
-  const firstRead = await h.call('terminal_read', { sessionId: exec.sessionId }, owner)
+  const firstRead = await h.call('background_terminal_read', { sessionId: exec.sessionId }, owner)
   assert.ok(firstRead.text.length > 0, '第一次读必须拿到内容，否则下面的空读是空断言')
-  await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
-  const secondRead = await h.call('terminal_read', { sessionId: exec.sessionId }, owner)
-  assert.equal(secondRead.text, '', 'terminal_state 不得消耗/推进 terminal_read 的游标')
+  await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
+  const secondRead = await h.call('background_terminal_read', { sessionId: exec.sessionId }, owner)
+  assert.equal(secondRead.text, '', 'background_terminal_state 不得消耗/推进 background_terminal_read 的游标')
 
   assert.deepEqual(projection(), before, '整个序列结束后记录仍然不变')
 })
@@ -768,14 +768,14 @@ test('S12 只读：调用前后记录不变，读取游标也不被推进', asyn
 test('S13 elapsedMs 随真实时间增长（发布锚点真实可用）', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.call('terminal_exec', { command: 'sleep 100' }, owner)
+  const exec = await h.call('background_terminal_exec', { command: 'sleep 100' }, owner)
 
-  const early = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const early = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(typeof early.elapsedMs, 'number')
   assert.ok(early.elapsedMs >= 0 && early.elapsedMs < 1_000, `刚发布应接近 0，实得 ${early.elapsedMs}`)
 
   await sleep(40)
-  const later = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const later = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.ok(later.elapsedMs >= 25, `elapsedMs 必须随真实时间增长（≥25ms），实得 ${later.elapsedMs}`)
   assert.ok(later.elapsedMs >= early.elapsedMs)
 })
@@ -797,26 +797,26 @@ test('硬约束：session-state.mjs 只 import node:* 与相对路径，不碰 @
 // ─────────────────────────────────────────────────────────────────────────────
 // 接线护栏（P1-GEN-1 撤销留下的教训：单元层全绿 ≠ 接线正确）
 //
-// 曾经有一整轮功能在单元层全绿的情况下是**死的**：没人驱动 terminal_signal 走一遍真实路径，
+// 曾经有一整轮功能在单元层全绿的情况下是**死的**：没人驱动 background_terminal_signal 走一遍真实路径，
 // 于是没人发现「一个会话只会签发一条带帧命令」——那个等待第二条命令的确认函数永远走不到。
 // 下面三条就是为这类错误立的：钉接线、钉模型事实、挡住已撤销的字段回流。
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('S14 接线：terminal_signal 的 SIGINT 落到 record.interrupt，快照随之降级', async () => {
+test('S14 接线：background_terminal_signal 的 SIGINT 落到 record.interrupt，快照随之降级', async () => {
   const h = mountPlugin()
   const owner = h.agentFor()
-  const exec = await h.call('terminal_exec', { command: 'npm run dev' }, owner)
+  const exec = await h.call('background_terminal_exec', { command: 'npm run dev' }, owner)
   h.pty().emit(`${READY_BEACON}\r\n`)
   const ready = await until(() => h.record(owner)?.ready === true)
   assert.ok(ready, 'shell 必须先就绪：未就绪时信号只会被排队（走另一条分支），那样测不到送货')
 
   // 中断之前：帧开着、没有中断事实，帧推断可信
-  const before = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const before = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(before.commandRunning, true, '命令在跑 → 帧未闭合')
   assert.equal(before.interrupt, null, '还没中断 → 没有中断记录')
   assert.equal(before.commandStateTrustworthy, true)
 
-  const signal = await h.call('terminal_signal', { sessionId: exec.sessionId, signal: 'SIGINT' }, owner)
+  const signal = await h.call('background_terminal_signal', { sessionId: exec.sessionId, signal: 'SIGINT' }, owner)
   assert.equal(signal.delivered, 'SIGINT')
   assert.equal(signal.queued, undefined, '已就绪会话必须当场送货，不得排队')
   assert.equal(signal.interruptId, 'intr-1')
@@ -836,7 +836,7 @@ test('S14 接线：terminal_signal 的 SIGINT 落到 record.interrupt，快照�
   assert.notEqual(record.pendingFrame, undefined, 'SIGINT 打断整行，帧就此永不闭合')
 
   // 投影侧：本轮真实教训——中断 delivered + 帧未闭合 → 不可信
-  const after = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const after = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(after.commandRunning, true, 'commandRunning 会永久停在 true，这正是它不可信的原因')
   assert.equal(after.commandStateTrustworthy, false, '中断 delivered + 帧未闭合 → 不可信')
   assert.equal(after.lastCommandEndReason, null, '中断路径不是帧自然闭合，因此没有 natural')
@@ -849,7 +849,7 @@ test('S14 接线：terminal_signal 的 SIGINT 落到 record.interrupt，快照�
   assert.equal(settledInterrupt.state, 'interrupt-pending', '落定时仍未确认 → 如实记 pending，不假装停干净了')
   assert.match(String(settledInterrupt.detail), /settled before the interrupt could be verified/)
 
-  const finalState = await h.call('terminal_state', { sessionId: exec.sessionId }, owner)
+  const finalState = await h.call('background_terminal_state', { sessionId: exec.sessionId }, owner)
   assert.equal(finalState.phase, 'exited')
   assert.equal(finalState.interrupt.state, 'interrupt-pending')
   assert.equal(finalState.commandRunning, true, '落定也没让帧闭合')
@@ -868,7 +868,7 @@ test('S15 commandGeneration：只在一处递增，且签发路径回显代次',
     .join('\n')
 
   // 这个字段被撤销过一次：一会话一帧命令时它恒为 1，描述了一条不存在的流程。
-  // 现在续签是真实路径（terminal_exec 的 sessionId），它必须**恰好**在一处递增——
+  // 现在续签是真实路径（background_terminal_exec 的 sessionId），它必须**恰好**在一处递增——
   // 两处各算一套的话，调用方就不知道手上的事实属于哪一代。
   const assigns = code.match(/record\.commandGeneration\s*=[^=]/g) ?? []
   assert.equal(assigns.length, 1, '代次只能在签发点（enqueueCommand）递增')
@@ -883,7 +883,7 @@ test('S15 commandGeneration：只在一处递增，且签发路径回显代次',
 
 test('S16 续签准入：sessionId 可用，但帧未闭合时必须显式 reset', async () => {
   const { readFile } = await import('node:fs/promises')
-  const execTool = mountPlugin().tools.get('terminal_exec')
+  const execTool = mountPlugin().tools.get('background_terminal_exec')
   assert.equal(execTool.parameters.properties.sessionId?.type, 'string', '续签必须是真实可走的路径')
   assert.equal(execTool.parameters.properties.reset?.type, 'boolean', 'reset 必须可被模型声明')
   assert.deepEqual(execTool.parameters.required, ['command'], '仍只需 command；sessionId 是可选形态')

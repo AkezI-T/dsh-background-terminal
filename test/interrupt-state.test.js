@@ -8,7 +8,7 @@
  * 本文件测两层：
  *   1) **投影**：给定合成 record，断言快照里三个字段（lastCommandEndReason / interrupt /
  *      commandStateTrustworthy）与契约逐字对齐；
- *   2) **接线**：用假 ctx + 假 PTY 从工具面驱动 terminal_signal 的 SIGINT，断言中断事实**真的
+ *   2) **接线**：用假 ctx + 假 PTY 从工具面驱动 background_terminal_signal 的 SIGINT，断言中断事实**真的
  *      落到 record 上**（I15）。这一层此前没人覆盖（旧测试只直接驱动投影函数与传输层）。
  *      **边界（别高估它）**：它**不是**当初能抓住那条死代码的工具——死代码要的是"第二条带帧命令"，
  *      而那条路径在本模型下不存在，所以有无死代码这条测试都绿。防复发靠的是**结构性护栏**
@@ -366,8 +366,8 @@ function mountRuntime() {
   return { tools, spawn, runtime, owner, call }
 }
 
-test('I15 接线：从工具面驱动 terminal_signal 的 SIGINT，中断事实必须真的落到 record 上', async () => {
-  // 从工具面出发：terminal_exec → terminal_signal(SIGINT)，断言中断事实真的落到 record 上。
+test('I15 接线：从工具面驱动 background_terminal_signal 的 SIGINT，中断事实必须真的落到 record 上', async () => {
+  // 从工具面出发：background_terminal_exec → background_terminal_signal(SIGINT)，断言中断事实真的落到 record 上。
   // 边界（别高估）：这条**抓不到**那条死掉的确认路径——它要的是"第二条带帧命令"，本模型下不存在，
   // 有无死代码这条测试都绿。它补的是此前没人覆盖的"工具面 → record 落点"这一面。
   const h = mountRuntime()
@@ -376,12 +376,12 @@ test('I15 接线：从工具面驱动 terminal_signal 的 SIGINT，中断事实�
     h.spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await h.call('terminal_exec', { command: 'sleep 100', waitMs: 400 })
+  const exec = await h.call('background_terminal_exec', { command: 'sleep 100', waitMs: 400 })
   assert.equal(exec.status, 'starting', '驱动前提：先拿到会话（未就绪 → starting）')
   pty.emit(READY_BEACON + CRLF)
   assert.ok(await until(() => pty.writeCalls().length >= 2), '驱动前提：信标后首条命令应被写入')
 
-  const signalled = await h.call('terminal_signal', { sessionId: exec.sessionId, signal: 'SIGINT' })
+  const signalled = await h.call('background_terminal_signal', { sessionId: exec.sessionId, signal: 'SIGINT' })
 
   // ① record 上确实产生了中断事实（不是只测了投影函数）
   const record = h.runtime.admission.listForOwner(h.owner)[0]

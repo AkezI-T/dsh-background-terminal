@@ -102,20 +102,20 @@ function assertSemantic(text, token, patterns, meaning) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('D1 两个工具的说明都注册到了、非空且互不相同（防止断言打在空串/串台的文本上）', () => {
-  const read = descriptionOf('terminal_read')
-  const signal = descriptionOf('terminal_signal')
+  const read = descriptionOf('background_terminal_read')
+  const signal = descriptionOf('background_terminal_signal')
   assert.notEqual(read, signal, '两个工具的说明不得是同一份文本（串台会让后面的断言失去意义）')
-  assert.match(read, /read/i, 'terminal_read 的说明应当是在讲"读"')
-  assert.match(signal, /signal/i, 'terminal_signal 的说明应当是在讲"信号"')
+  assert.match(read, /read/i, 'background_terminal_read 的说明应当是在讲"读"')
+  assert.match(signal, /signal/i, 'background_terminal_signal 的说明应当是在讲"信号"')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// terminal_read：truncated / lossy / nextCursor
+// background_terminal_read：truncated / lossy / nextCursor
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('D2 terminal_read 说明解释 truncated：本次读取被上限截断、后面还有内容', () => {
+test('D2 background_terminal_read 说明解释 truncated：本次读取被上限截断、后面还有内容', () => {
   assertSemantic(
-    descriptionOf('terminal_read'),
+    descriptionOf('background_terminal_read'),
     'truncated',
     [
       /truncat\w*[^.]{0,160}(cap|limit|maxoutputchars|more|remain|incomplete|partial)/i,
@@ -125,9 +125,9 @@ test('D2 terminal_read 说明解释 truncated：本次读取被上限截断、�
   )
 })
 
-test('D3 terminal_read 说明解释 lossy：输出在读到之前已被环缓冲覆盖', () => {
+test('D3 background_terminal_read 说明解释 lossy：输出在读到之前已被环缓冲覆盖', () => {
   assertSemantic(
-    descriptionOf('terminal_read'),
+    descriptionOf('background_terminal_read'),
     'lossy',
     [
       /lossy[^.]{0,160}(overwrit|lost|drop|discard|evict|gap)/i,
@@ -137,8 +137,8 @@ test('D3 terminal_read 说明解释 lossy：输出在读到之前已被环缓冲
   )
 })
 
-test('D4 terminal_read 说明解释 nextCursor 是绝对位置，且不得与输出总量相减（本 P0 重点）', () => {
-  const text = descriptionOf('terminal_read')
+test('D4 background_terminal_read 说明解释 nextCursor 是绝对位置，且不得与输出总量相减（本 P0 重点）', () => {
+  const text = descriptionOf('background_terminal_read')
 
   assertSemantic(
     text,
@@ -164,12 +164,12 @@ test('D4 terminal_read 说明解释 nextCursor 是绝对位置，且不得与输
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// terminal_signal：SIGINT 语义 + 外部验证的视野边界
+// background_terminal_signal：SIGINT 语义 + 外部验证的视野边界
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('D5 terminal_signal 说明解释 SIGINT 的中断语义：打断前台命令、shell 本体存活', () => {
+test('D5 background_terminal_signal 说明解释 SIGINT 的中断语义：打断前台命令、shell 本体存活', () => {
   assertSemantic(
-    descriptionOf('terminal_signal'),
+    descriptionOf('background_terminal_signal'),
     'SIGINT',
     [
       /sigint[^.]{0,160}interrupt/i,
@@ -180,8 +180,8 @@ test('D5 terminal_signal 说明解释 SIGINT 的中断语义：打断前台命�
   )
 })
 
-test('D6 terminal_signal 说明声明「外部验证不在插件视野」（进程树/端口不在观测范围内）', () => {
-  const text = descriptionOf('terminal_signal')
+test('D6 background_terminal_signal 说明声明「外部验证不在插件视野」（进程树/端口不在观测范围内）', () => {
+  const text = descriptionOf('background_terminal_signal')
 
   // 措辞不冻结，只收真正表达了"看不到外部"的几种说法。
   const patterns = [
@@ -193,7 +193,7 @@ test('D6 terminal_signal 说明声明「外部验证不在插件视野」（进�
   ]
   assert.ok(
     patterns.some((pattern) => pattern.test(text)),
-    `terminal_signal 的说明必须声明外部验证不在此插件的视野内（进程树/端口它看不到）；\n实际说明是：\n${text}`,
+    `background_terminal_signal 的说明必须声明外部验证不在此插件的视野内（进程树/端口它看不到）；\n实际说明是：\n${text}`,
   )
 })
 
@@ -201,19 +201,19 @@ test('D6 terminal_signal 说明声明「外部验证不在插件视野」（进�
 // P1-READ-1：peekTail / outputFinal / unreadBytes 的说明面
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('D7 terminal_read 的 schema 暴露 peekTail（字符数，number）', () => {
+test('D7 background_terminal_read 的 schema 暴露 peekTail（字符数，number）', () => {
   // 局限：只证明这个入参**注册出去了**，不证明它的运行时行为与说明一致。
-  const definition = TOOLS.get('terminal_read')
-  assert.ok(definition, 'terminal_read 未注册')
+  const definition = TOOLS.get('background_terminal_read')
+  assert.ok(definition, 'background_terminal_read 未注册')
   const peekTail = definition.parameters?.properties?.peekTail
-  assert.ok(peekTail, 'terminal_read 必须暴露 peekTail 入参（P1-READ-1）')
+  assert.ok(peekTail, 'background_terminal_read 必须暴露 peekTail 入参（P1-READ-1）')
   assert.equal(peekTail.type, 'number', 'peekTail 是字符数，类型必须是 number')
 })
 
-test('D8 terminal_read 说明出现 peekTail / outputFinal / unreadBytes，且解释 outputFinal 的含义', () => {
-  const text = descriptionOf('terminal_read')
+test('D8 background_terminal_read 说明出现 peekTail / outputFinal / unreadBytes，且解释 outputFinal 的含义', () => {
+  const text = descriptionOf('background_terminal_read')
   for (const token of ['peekTail', 'outputFinal', 'unreadBytes']) {
-    assert.ok(text.includes(token), `terminal_read 的说明必须出现 ${token}`)
+    assert.ok(text.includes(token), `background_terminal_read 的说明必须出现 ${token}`)
   }
 
   assertSemantic(
@@ -228,8 +228,8 @@ test('D8 terminal_read 说明出现 peekTail / outputFinal / unreadBytes，且�
   )
 })
 
-test('D9 terminal_read 说明解释 peekTail：只读快照、不推进游标，且忽略 waitMs', () => {
-  const text = descriptionOf('terminal_read')
+test('D9 background_terminal_read 说明解释 peekTail：只读快照、不推进游标，且忽略 waitMs', () => {
+  const text = descriptionOf('background_terminal_read')
   assert.ok(text.includes('peekTail'), '说明必须出现 peekTail')
 
   // 作用域 = 所有提到 peekTail 的 bullet（说明是数组按行 join）。同一条 bullet 内允许跨句：
@@ -255,8 +255,8 @@ test('D9 terminal_read 说明解释 peekTail：只读快照、不推进游标，
   )
 })
 
-test('D10 terminal_read 说明把 unreadBytes 说成剩余量的唯一正确来源，并禁止去减 outputBytes 与 nextCursor', () => {
-  const text = descriptionOf('terminal_read')
+test('D10 background_terminal_read 说明把 unreadBytes 说成剩余量的唯一正确来源，并禁止去减 outputBytes 与 nextCursor', () => {
+  const text = descriptionOf('background_terminal_read')
   // 作用域同 D9：所有提到 unreadBytes 的 bullet，允许同一条 bullet 内跨句。
   const window = bulletsOf(text, 'unreadBytes')
   assert.notEqual(window, '', '说明必须出现 unreadBytes')

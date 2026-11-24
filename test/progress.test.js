@@ -319,7 +319,7 @@ function mountPlugin(rawConfig = { ptyBackend: 'host' }) {
       const definition = tools.get(name)
       assert.ok(definition, `工具 ${name} 未注册`)
       // 测试统一注入极短 `waitMs`（产品默认是有界等待 10s；假 PTY 的帧永不闭合）
-      const effective = name === 'terminal_exec' ? { waitMs: 1, ...args } : args
+      const effective = name === 'background_terminal_exec' ? { waitMs: 1, ...args } : args
       return definition.execute(effective, { agent: owner, signal: undefined })
     },
     /** 走插件自己的 `ctx.effect` 清理路径（不 await：可能被挂住的 terminate 卡住）。 */
@@ -330,12 +330,12 @@ function mountPlugin(rawConfig = { ptyBackend: 'host' }) {
   }
 }
 
-test('P8 集成：job 输出环收到**清洗后**文本（与 terminal_read 一致），进度行经 updateProgress 推送，终态即停', async () => {
+test('P8 集成：job 输出环收到**清洗后**文本（与 background_terminal_read 一致），进度行经 updateProgress 推送，终态即停', async () => {
   const h = mountPlugin({ progressIntervalMs: 15, ptyBackend: 'host' })
   const owner = h.agentFor()
   const pty = h.pty()
 
-  const exec = await h.call('terminal_exec', { command: 'npm run build' }, owner)
+  const exec = await h.call('background_terminal_exec', { command: 'npm run build' }, owner)
   assert.equal(typeof exec.jobId, 'string')
 
   // 带 ANSI 颜色的输出：模型读到的是清洗后的文本，jobs 必须拿到**同一份**
@@ -345,7 +345,7 @@ test('P8 集成：job 输出环收到**清洗后**文本（与 terminal_read 一
 
   const appended = h.handleFor(exec.jobId).appended.join('')
   assert.doesNotMatch(appended, /\x1b\[/, 'job 输出环必须收到清洗后的文本，不能带 ANSI 转义')
-  const read = await h.call('terminal_read', { sessionId: exec.sessionId }, owner)
+  const read = await h.call('background_terminal_read', { sessionId: exec.sessionId }, owner)
   assert.match(read.text, /building 1\/3/)
   assert.equal(appended, read.text, 'job 输出环的内容必须与模型读到的完全一致')
 
@@ -411,7 +411,7 @@ test('P9 清理路径：会话不落定时 teardown 必须停掉进度定时器�
   pty.handle.terminate = () => new Promise(() => {})
   h.setPty(pty)
 
-  const exec = await h.call('terminal_exec', { command: 'npm install' }, owner)
+  const exec = await h.call('background_terminal_exec', { command: 'npm install' }, owner)
   pty.emit('added 1 package\r\n')
   const gotProgress = await until(() => h.handleFor(exec.jobId).progress.length >= 1)
   assert.ok(gotProgress, '活动会话必须有进度行')

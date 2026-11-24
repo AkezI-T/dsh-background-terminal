@@ -4,7 +4,7 @@
 
 一次启动后，可以读取增量输出、向进程输入内容、中断前台命令，并在同一个 shell 中继续执行下一条命令。工作目录和环境变量随会话保留。
 
-> **权限边界**：默认 `node-pty` 后端直接派生 shell，具有宿主进程可用的文件与网络权限，不受 DSH 文件沙箱隔离。会话的 `workspace-write` 模式和工作目录检查不能限制后续命令的文件影响。实际隔离等级从 `terminal_state.enforcement` 查看；受限操作应使用具备相应隔离的工具。
+> **权限边界**：默认 `node-pty` 后端直接派生 shell，具有宿主进程可用的文件与网络权限，不受 DSH 文件沙箱隔离。会话的 `workspace-write` 模式和工作目录检查不能限制后续命令的文件影响。实际隔离等级从 `background_terminal_state.enforcement` 查看；受限操作应使用具备相应隔离的工具。
 
 ## 安装
 
@@ -16,7 +16,20 @@ https://github.com/AkezI-T/dsh-background-terminal
 
 也支持本地项目目录。依赖解析与 Bundle 挂载由 DSH 完成，安装结果中的生效状态与后续操作提示决定是否需要重启 Host。
 
-插件注册五个 `terminal_*` 工具；宿主提供 `skills` 服务时，还会注册随包技能 `background-terminal`。技能帮助 Agent 选择工具、管理会话和判读输出。
+插件注册五个 `background_terminal_*` 工具；宿主提供 `skills` 服务时，还会注册随包技能 `background-terminal`。技能帮助 Agent 选择工具、管理会话和判读输出。
+
+## 团队中的终端选择
+
+Agent Teams 开启时，插件按宿主提供的团队状态与主、子 Agent 身份动态提供选择指引：
+
+| Agent | 新建持久终端时的优先选择 |
+|---|---|
+| 主 Agent | 官方 `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close`、`terminal_list`；本插件五个 `background_terminal_*` 接口继续可用，官方工具未提供时可使用本插件 |
+| 子 Agent | 本插件 `background_terminal_*` 工具 |
+
+已有终端继续使用创建它的工具组读取、输入、中断与关闭；两组工具的 `sessionId` 和参数各自独立。短命令仍使用 `bash` / `pwsh`，只需最终结果的一次性长任务使用后台 Job。
+
+团队关闭时撤下这段分工指引。该指引提供选择偏好，实际选择仍由 Agent 根据任务决定；工具权限沿用各自的检查与审批流程。
 
 ## 什么时候使用
 
@@ -24,36 +37,36 @@ https://github.com/AkezI-T/dsh-background-terminal
 |---|---|
 | 短命令，只需要结果与退出码 | 前台 `bash` / `pwsh` |
 | 一次性长任务，只需要最终结果 | 宿主提供的后台 Job 工具 |
-| Electron 开发服务器、watch / HMR、调试器、交互式安装器 | `terminal_exec` |
-| 本地软件或构建进程需要观察、交互或保留 shell 环境 | `terminal_exec`；启动器退出后另看应用状态 |
-| 远程大文件下载需要查看进度或中断 | `terminal_exec`；只需最终文件时用后台 Job |
-| 长任务需要持续观察日志、输入内容或中途中断 | `terminal_exec` |
-| 保留 shell 的工作目录、环境变量，继续下一条命令 | 带 `sessionId` 的 `terminal_exec` |
+| Electron 开发服务器、watch / HMR、调试器、交互式安装器 | `background_terminal_exec` |
+| 本地软件或构建进程需要观察、交互或保留 shell 环境 | `background_terminal_exec`；启动器退出后另看应用状态 |
+| 远程大文件下载需要查看进度或中断 | `background_terminal_exec`；只需最终文件时用后台 Job |
+| 长任务需要持续观察日志、输入内容或中途中断 | `background_terminal_exec` |
+| 保留 shell 的工作目录、环境变量，继续下一条命令 | 带 `sessionId` 的 `background_terminal_exec` |
 
 ## 快速上手
 
-以下示例是 Agent 工具调用；`sessionId` 使用首次调用返回的值，`cwd` 使用项目绝对路径。开始前用 `terminal_state({})` 检查已有会话，优先复用适用的 shell，关闭已结束使用的会话。
+以下示例是 Agent 工具调用；`sessionId` 使用首次调用返回的值，`cwd` 使用项目绝对路径。开始前用 `background_terminal_state({})` 检查已有会话，优先复用适用的 shell，关闭已结束使用的会话。
 
 ### 启动开发服务器并观察日志
 
 ```js
-terminal_exec({
+background_terminal_exec({
   command: 'npm run dev',
   cwd: '<项目绝对路径>',
   label: '开发服务器',
   waitMs: 10000
 })
 
-terminal_read({ sessionId, waitMs: 10000 })
-terminal_state({ sessionId })
+background_terminal_read({ sessionId, waitMs: 10000 })
+background_terminal_state({ sessionId })
 ```
 
-等待窗口结束后，服务器继续运行。就绪日志与服务健康检查共同确认应用已启动；`terminal_state.ready` 只表示 shell 已就绪。执行健康检查须遵循当前任务的验证授权。
+等待窗口结束后，服务器继续运行。就绪日志与服务健康检查共同确认应用已启动；`background_terminal_state.ready` 只表示 shell 已就绪。执行健康检查须遵循当前任务的验证授权。
 
 ### 运行长任务，结束时通知 Agent
 
 ```js
-terminal_exec({
+background_terminal_exec({
   command: 'npm run build',
   cwd: '<项目绝对路径>',
   label: '项目构建',
@@ -70,29 +83,29 @@ terminal_exec({
 
 ```js
 // 回答交互程序的问题；newline 默认 true
-terminal_write({ sessionId, data: 'y' })
+background_terminal_write({ sessionId, data: 'y' })
 
 // 中断前台命令，保留 shell
-terminal_signal({ sessionId, signal: 'SIGINT' })
+background_terminal_signal({ sessionId, signal: 'SIGINT' })
 
 // 上一条命令正常结束后，继续使用同一个 shell
-terminal_exec({ sessionId, command: 'git status --short' })
+background_terminal_exec({ sessionId, command: 'git status --short' })
 ```
 
 中断可能使上一条命令的结束标记缺失。确认前台任务已停止、shell 可接收命令后，可显式放弃旧退出码并开始下一条命令：
 
 ```js
-terminal_exec({ sessionId, command: 'git status --short', reset: true })
+background_terminal_exec({ sessionId, command: 'git status --short', reset: true })
 ```
 
-`reset` 只重建命令跟踪状态。前台程序的交互输入使用 `terminal_write`；下一条 shell 命令使用 `terminal_exec`。
+`reset` 只重建命令跟踪状态。前台程序的交互输入使用 `background_terminal_write`；下一条 shell 命令使用 `background_terminal_exec`。
 
 ### 结束使用
 
 ```js
-terminal_read({ sessionId })                 // 保存仍需使用的输出
-terminal_signal({ sessionId, close: true })  // 关闭整个会话
-terminal_state({ sessionId })               // 查看清理结果
+background_terminal_read({ sessionId })                 // 保存仍需使用的输出
+background_terminal_signal({ sessionId, close: true })  // 关闭整个会话
+background_terminal_state({ sessionId })               // 查看清理结果
 ```
 
 每个 Agent 默认最多持有 4 个活动会话。命令结束后，shell 仍会占用容量；还有后续工作时可继续复用，任务完成后显式关闭。
@@ -105,13 +118,13 @@ terminal_state({ sessionId })               // 查看清理结果
 
 | 工具 | 用途 | 主要参数 |
 |---|---|---|
-| `terminal_exec` | 新建 shell，或在已有 shell 中执行下一条命令 | `command`、`sessionId`、`reset`、`cwd`、`label`、`waitMs`、`readCount`、`notifyOnExit`、`shellPath` |
-| `terminal_read` | 增量读取、等待新输出、只读查看尾部 | `sessionId`、`maxOutputChars`、`waitMs`、`peekTail` |
-| `terminal_write` | 向当前前台程序写输入 | `sessionId`、`data`、`newline` |
-| `terminal_signal` | 中断前台任务或关闭会话 | `sessionId`、`signal`、`close`、`reason` |
-| `terminal_state` | 查询当前 Agent 的会话快照 | `sessionId`；省略时列出活动与保留期会话 |
+| `background_terminal_exec` | 新建 shell，或在已有 shell 中执行下一条命令 | `command`、`sessionId`、`reset`、`cwd`、`label`、`waitMs`、`readCount`、`notifyOnExit`、`shellPath` |
+| `background_terminal_read` | 增量读取、等待新输出、只读查看尾部 | `sessionId`、`maxOutputChars`、`waitMs`、`peekTail` |
+| `background_terminal_write` | 向当前前台程序写输入 | `sessionId`、`data`、`newline` |
+| `background_terminal_signal` | 中断前台任务或关闭会话 | `sessionId`、`signal`、`close`、`reason` |
+| `background_terminal_state` | 查询当前 Agent 的会话快照 | `sessionId`；省略时列出活动与保留期会话 |
 
-`terminal_exec.waitMs` 默认 10000 ms、最大 30000 ms；启动阶段另有等待预算。`readCount` 默认 1、最大 20。`terminal_read.waitMs` 默认 0，最大 30000 ms。完整参数以宿主展示的工具 Schema 为准。
+`background_terminal_exec.waitMs` 默认 10000 ms、最大 30000 ms；启动阶段另有等待预算。`readCount` 默认 1、最大 20。`background_terminal_read.waitMs` 默认 0，最大 30000 ms。完整参数以宿主展示的工具 Schema 为准。
 
 ## 状态与输出怎么读
 
@@ -131,11 +144,11 @@ terminal_state({ sessionId })               // 查看清理结果
 ### 增量读取与尾部查看
 
 ```js
-terminal_read({ sessionId, maxOutputChars: 16000 })
-terminal_read({ sessionId, peekTail: 2000 })
+background_terminal_read({ sessionId, maxOutputChars: 16000 })
+background_terminal_read({ sessionId, peekTail: 2000 })
 ```
 
-普通读取推进共享游标。`terminal_exec` 返回的内联输出也已经消费；后续读取从剩余部分继续。`peekTail` 查看当前保留的尾部，不推进游标；其预算在实现中按字节定位，多字节文本可能少于指定字符数。
+普通读取推进共享游标。`background_terminal_exec` 返回的内联输出也已经消费；后续读取从剩余部分继续。`peekTail` 查看当前保留的尾部，不推进游标；其预算在实现中按字节定位，多字节文本可能少于指定字符数。
 
 | 字段 | 判读 |
 |---|---|
@@ -183,7 +196,7 @@ terminal_read({ sessionId, peekTail: 2000 })
 - **中断证据**：信号已送达只证明写入已发生，任务是否停止需要结合独立证据判断。`reset` 会放弃旧命令的退出码。
 - **持久性**：shell 跨工具调用、模型回合存活；宿主重启后的会话恢复尚未实现。
 - **Shell 兼容性**：Windows PowerShell 5.1 缺少 `&&` / `||`；macOS 自带 Bash 3.2 缺少部分新语法。当前提供 Bash、PowerShell 两种方言。
-- **命令拦截**：危险命令检测覆盖 `terminal_exec`，`allowDangerous` 可显式覆盖；原始输入通道 `terminal_write` 直接写入。操作权限仍由任务授权决定。
+- **命令拦截**：危险命令检测覆盖 `background_terminal_exec`，`allowDangerous` 可显式覆盖；原始输入通道 `background_terminal_write` 直接写入。操作权限仍由任务授权决定。
 - **运行状态**：退出码、shell 就绪、日志静默分别反映不同事实。完成判定需结合任务产物、日志或服务健康状态。
 
 ## 开发与验证

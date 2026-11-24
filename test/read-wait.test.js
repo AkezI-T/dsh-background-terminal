@@ -86,7 +86,7 @@ function mount() {
     const def = tools.get(name)
     assert.ok(def, `工具未注册: ${name}`)
     // 测试统一注入极短 `waitMs`（产品默认是有界等待 10s；假 PTY 的帧永不闭合）
-    const effective = name === 'terminal_exec' ? { waitMs: 1, ...args } : args
+    const effective = name === 'background_terminal_exec' ? { waitMs: 1, ...args } : args
     return def.execute(effective, { agent: owner })
   }
   return { tools, spawn, runtime, agentFor, callTool }
@@ -99,13 +99,13 @@ async function readySession(h, owner) {
     h.spawn.spawnCalls.push(spec)
     return pty.handle
   }
-  const exec = await h.callTool('terminal_exec', { command: 'echo hi' }, owner)
+  const exec = await h.callTool('background_terminal_exec', { command: 'echo hi' }, owner)
   pty.emit(READY_BEACON + CRLF)
   const deadline = Date.now() + 2000
   while (Date.now() < deadline && h.runtime.admission.listForOwner(owner)[0]?.ready !== true) {
     await new Promise((r) => setTimeout(r, 5))
   }
-  await h.callTool('terminal_read', { sessionId: exec.sessionId }, owner) // 清空游标
+  await h.callTool('background_terminal_read', { sessionId: exec.sessionId }, owner) // 清空游标
   return { pty, sessionId: exec.sessionId }
 }
 
@@ -123,7 +123,7 @@ test('R1 已有未读数据时 waitMs 必须立即返回，不得等满', async 
   await new Promise((r) => setTimeout(r, 30))
 
   const started = Date.now()
-  const pending = h.callTool('terminal_read', { sessionId, waitMs: 3000 }, owner)
+  const pending = h.callTool('background_terminal_read', { sessionId, waitMs: 3000 }, owner)
   pending.then(() => {}, () => {})
   const woke = await raceWithTimeout(pending, 1200)
   assert.notEqual(woke, -1, '有未读数据时必须立即返回（等满说明缺少"订阅前检查未读数据"）')
@@ -142,7 +142,7 @@ test('R2 无未读数据时仍按 waitMs 等待并返回 timeout 语义', async 
 
   // 游标已清空、无新输出 → 应当等满（这里用较短的 waitMs）
   const woke = await raceWithTimeout(
-    h.callTool('terminal_read', { sessionId, waitMs: 300 }, owner),
+    h.callTool('background_terminal_read', { sessionId, waitMs: 300 }, owner),
     2000,
   )
   assert.notEqual(woke, -1, '无数据时应在 waitMs 后返回，而不是永不返回')
@@ -155,7 +155,7 @@ test('R3 等待期间的输出必须唤醒，且只收口一次', async () => {
   const owner = h.agentFor()
   const { pty, sessionId } = await readySession(h, owner)
 
-  const pending = h.callTool('terminal_read', { sessionId, waitMs: 5000 }, owner)
+  const pending = h.callTool('background_terminal_read', { sessionId, waitMs: 5000 }, owner)
   pending.then(() => {}, () => {})
   await new Promise((r) => setTimeout(r, 40)) // 让 sink 挂上
 
@@ -173,7 +173,7 @@ test('R4 输出流结束（EOF）也必须唤醒，不等满 waitMs', async () =
   const owner = h.agentFor()
   const { pty, sessionId } = await readySession(h, owner)
 
-  const pending = h.callTool('terminal_read', { sessionId, waitMs: 5000 }, owner)
+  const pending = h.callTool('background_terminal_read', { sessionId, waitMs: 5000 }, owner)
   pending.then(() => {}, () => {})
   await new Promise((r) => setTimeout(r, 40))
 
@@ -194,7 +194,7 @@ test('R5 订阅与检查之间到达的数据不得丢唤醒（注册后复查�
 
   // 在"发起读取"与"等待真正挂上 sink"之间注入输出——正是检查/订阅竞态窗口。
   // 实现若只在订阅**之前**检查一次，这里的输出不会触发 sink，就会白等满 waitMs。
-  const pending = h.callTool('terminal_read', { sessionId, waitMs: 3000 }, owner)
+  const pending = h.callTool('background_terminal_read', { sessionId, waitMs: 3000 }, owner)
   pending.then(() => {}, () => {})
   pty.emit('arrived-during-race\r\n')
 
@@ -221,7 +221,7 @@ test('W1 wakeReason=already-readable：订阅前已有未读数据', async () =>
 
   // 走到 waitForData 的"注册后复查"分支（订阅前检查已被上面的 emit 满足，
   // 但两次判定相同，这里锁的是返回协议本身）
-  const result = await h.callTool('terminal_read', { sessionId, waitMs: 2000 }, owner)
+  const result = await h.callTool('background_terminal_read', { sessionId, waitMs: 2000 }, owner)
   assert.ok(
     ['already-readable', 'data'].includes(result.wakeReason),
     `已有未读数据时 wakeReason 应为 already-readable（或 data），实得 ${result.wakeReason}`,
@@ -234,7 +234,7 @@ test('W2 wakeReason=data：等待期间到达新输出', async () => {
   const owner = h.agentFor()
   const { pty, sessionId } = await readySession(h, owner)
 
-  const pending = h.callTool('terminal_read', { sessionId, waitMs: 5000 }, owner)
+  const pending = h.callTool('background_terminal_read', { sessionId, waitMs: 5000 }, owner)
   pending.then(() => {}, () => {})
   await new Promise((r) => setTimeout(r, 40))
   pty.emit('woke-by-data\r\n')
@@ -250,7 +250,7 @@ test('W3 wakeReason=timeout：什么都没发生', async () => {
   const { sessionId } = await readySession(h, owner)
 
   const { value, capped } = await awaitRead(
-    h.callTool('terminal_read', { sessionId, waitMs: 250 }, owner),
+    h.callTool('background_terminal_read', { sessionId, waitMs: 250 }, owner),
     3000,
   )
   assert.equal(capped, false, '无数据时应在 waitMs 后返回')
@@ -263,7 +263,7 @@ test('W4 wakeReason=output-ended：输出流结束', async () => {
   const owner = h.agentFor()
   const { pty, sessionId } = await readySession(h, owner)
 
-  const pending = h.callTool('terminal_read', { sessionId, waitMs: 5000 }, owner)
+  const pending = h.callTool('background_terminal_read', { sessionId, waitMs: 5000 }, owner)
   pending.then(() => {}, () => {})
   await new Promise((r) => setTimeout(r, 40))
   pty.endOutput()
@@ -277,7 +277,7 @@ test('W5 waitMs=0 时不带 wakeReason（没有等待就没有唤醒原因）', 
   const owner = h.agentFor()
   const { sessionId } = await readySession(h, owner)
 
-  const result = await h.callTool('terminal_read', { sessionId, waitMs: 0 }, owner)
+  const result = await h.callTool('background_terminal_read', { sessionId, waitMs: 0 }, owner)
   assert.equal(result.wakeReason, undefined, '非阻塞读取不应有 wakeReason 字段')
 })
 
@@ -295,8 +295,8 @@ test('C1 两次并发读取：同一段输出恰好投喂一次（不重复、�
   // 连跑多轮：单轮"恰好一次"可能是巧合，多轮才能证明契约稳定
   for (let round = 0; round < 4; round += 1) {
     const mark = `CONCURRENT_R${round}_MARK`
-    const a = h.callTool('terminal_read', { sessionId, waitMs: 600 }, owner)
-    const b = h.callTool('terminal_read', { sessionId, waitMs: 600 }, owner)
+    const a = h.callTool('background_terminal_read', { sessionId, waitMs: 600 }, owner)
+    const b = h.callTool('background_terminal_read', { sessionId, waitMs: 600 }, owner)
     a.then(() => {}, () => {})
     b.then(() => {}, () => {})
     await new Promise((r) => setTimeout(r, 30)) // 让两个 sink 都挂上
@@ -324,11 +324,11 @@ test('R6 等待本身不消费输出：超时返回后未读数据仍在', async
   // 先产生输出吃掉一次"立即返回"，再读掉它
   pty.emit('first-batch\r\n')
   await new Promise((r) => setTimeout(r, 20))
-  const first = await h.callTool('terminal_read', { sessionId, waitMs: 200 }, owner)
+  const first = await h.callTool('background_terminal_read', { sessionId, waitMs: 200 }, owner)
   assert.match(first.text, /first-batch/)
 
   // 现在无未读数据 → 会等满；等待期间到达的数据不能被"等待动作"消费掉
-  const pending = h.callTool('terminal_read', { sessionId, waitMs: 400 }, owner)
+  const pending = h.callTool('background_terminal_read', { sessionId, waitMs: 400 }, owner)
   pending.then(() => {}, () => {})
   await new Promise((r) => setTimeout(r, 40))
   pty.emit('during-wait\r\n')

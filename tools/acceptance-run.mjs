@@ -13,18 +13,18 @@
  *
  * ## 它验证的目标闭环
  *
- *   ① terminal_exec 起一个持久 shell（不再 127）
+ *   ① background_terminal_exec 起一个持久 shell（不再 127）
  *   ② 在 shell 里设置预设变量并读回          → "读取到预设设置的变量值"
  *   ③ 跑一次真实构建并落盘产物               → "成功构建"
- *   ④ 读回构建状态（terminal_state + 正文）   → "读取到某些状态"
+ *   ④ 读回构建状态（background_terminal_state + 正文）   → "读取到某些状态"
  *   ⑤ 占用端口 → 释放端口（Node 侧独立反证）  → "最后结束释放端口"
- *   ⑥ terminal_signal close 释放会话          → 完整流程收尾
+ *   ⑥ background_terminal_signal close 释放会话          → 完整流程收尾
  *
  * ## 前置条件
  *
  * - 宿主已重启并加载新代码（返回的 shell.version 应与 package.json 的 version 一致）
  * - 宿主进程**不受限**：受限令牌无法创建 ConPTY 的命名管道。
- *   若在受限环境跑，`terminal_exec` 会返回 `startup-failed`，
+ *   若在受限环境跑，`background_terminal_exec` 会返回 `startup-failed`，
  *   本脚本会明确报出这一点而不是给出误导性的结论。
  *
  * ## 怎么拿到工具
@@ -128,10 +128,10 @@ const main = async () => {
   mkdirSync(WORKDIR, { recursive: true })
 
   // ① 起会话
-  const exec = await call('terminal_exec', { command: 'Write-Output "__READY__"', label: 'acceptance' })
-  // 累积所有增量读取的文本，供后续断言（terminal_read 契约是"不重复"）
+  const exec = await call('background_terminal_exec', { command: 'Write-Output "__READY__"', label: 'acceptance' })
+  // 累积所有增量读取的文本，供后续断言（background_terminal_read 契约是"不重复"）
   let allOutput = ''
-  console.log('\n① terminal_exec →', JSON.stringify({ status: exec.status, version: exec.shell?.version, code: exec.code }))
+  console.log('\n① background_terminal_exec →', JSON.stringify({ status: exec.status, version: exec.shell?.version, code: exec.code }))
   if (!check('① 会话已启动（非 127/startup-failed）', exec.status === 'running', true)) {
     console.log('   诊断:', String(exec.diagnostics ?? exec.detail ?? '').slice(0, 600))
     console.log('\n若为 startup-failed 且提示命名管道/EPERM，说明当前进程受限于 DSH 沙箱，')
@@ -141,9 +141,9 @@ const main = async () => {
   }
 
   // ② 预设变量并读回
-  await call('terminal_write', { sessionId: exec.sessionId, data: "$global:DSH_VERDICT = 'roundtrip-ok'", newline: true })
+  await call('background_terminal_write', { sessionId: exec.sessionId, data: "$global:DSH_VERDICT = 'roundtrip-ok'", newline: true })
   await sleep(400)
-  const readVar = await call('terminal_read', { sessionId: exec.sessionId })
+  const readVar = await call('background_terminal_read', { sessionId: exec.sessionId })
   allOutput += String(readVar.text ?? '')
   check('② 读回预设变量值', /roundtrip-ok/.test(allOutput), true)
 
@@ -156,7 +156,7 @@ const main = async () => {
     "console.log('BUILD_DONE=yes')",
   ].join('\n'), 'utf8')
   if (existsSync(outJson)) rmSync(outJson)
-  await call('terminal_write', {
+  await call('background_terminal_write', {
     sessionId: exec.sessionId,
     data: `& node "${script}" "${outJson}"`,
     newline: true,
@@ -170,25 +170,25 @@ const main = async () => {
   if (existsSync(outJson)) { try { built = JSON.parse(readFileSync(outJson, 'utf8')) } catch {} }
   check('③ 产物 built', built?.built, true)
 
-  // ④ 读回状态：优先用 terminal_state（task-10 落地后才有）
-  if (tools.has('terminal_state')) {
-    const state = await call('terminal_state', { sessionId: exec.sessionId })
-    console.log('\n④ terminal_state →', JSON.stringify(state, null, 2).slice(0, 700))
+  // ④ 读回状态：优先用 background_terminal_state（task-10 落地后才有）
+  if (tools.has('background_terminal_state')) {
+    const state = await call('background_terminal_state', { sessionId: exec.sessionId })
+    console.log('\n④ background_terminal_state →', JSON.stringify(state, null, 2).slice(0, 700))
     check('④ state.enforcement 如实上报', ['confined', 'windows-pty-unconfined', 'unconfined'].includes(state.enforcement), true)
     // elapsedMs 在跑就说明快照读到了真实的发布时间锚；字节数在长任务阶段（⑥）断言，
     // 因为那里的输出是确定到达的——这里 shell 可能刚就绪，`outputBytes` 仍为 0 属正常。
     check('④ state.elapsedMs 有观测值', typeof state.elapsedMs === 'number' && state.elapsedMs > 0, true)
   } else {
-    console.log('\n④ terminal_state 尚未注册（task-10 未落地），跳过结构化状态检查')
+    console.log('\n④ background_terminal_state 尚未注册（task-10 未落地），跳过结构化状态检查')
   }
-  const readState = await call('terminal_read', { sessionId: exec.sessionId })
-  // `terminal_read` 是**增量**契约（"不重复"）：所以必须累积所有读到的文本再找，
+  const readState = await call('background_terminal_read', { sessionId: exec.sessionId })
+  // `background_terminal_read` 是**增量**契约（"不重复"）：所以必须累积所有读到的文本再找，
   // 不能只看最后一次——BUILD_DONE 很可能已被前面那次读走。
   allOutput += String(readState.text ?? '')
   check('④ 正文里能看到构建输出', /BUILD_DONE=yes/.test(allOutput), true)
 
   // ⑤ 端口占用与释放（Node 侧独立反证）
-  await call('terminal_write', {
+  await call('background_terminal_write', {
     sessionId: exec.sessionId,
     data: `$global:l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, ${PORT}); $global:l.Start(); Write-Output "BOUND=$($global:l.LocalEndpoint.Port)"`,
     newline: true,
@@ -202,7 +202,7 @@ const main = async () => {
   })
   check('⑤ 占用期间端口确实被占（独立反证）', busy, true)
 
-  await call('terminal_write', { sessionId: exec.sessionId, data: '$global:l.Stop(); Write-Output "RELEASED=yes"', newline: true })
+  await call('background_terminal_write', { sessionId: exec.sessionId, data: '$global:l.Stop(); Write-Output "RELEASED=yes"', newline: true })
   await sleep(800)
   const free = await new Promise((resolve) => {
     const s = createServer()
@@ -228,13 +228,13 @@ const main = async () => {
     "const t = setInterval(() => { process.stdout.write(`TICK ${++i}\\n`) }, 250)",
     'setTimeout(() => { clearInterval(t) }, 60000)',
   ].join('\n'), 'utf8')
-  await call('terminal_write', {
+  await call('background_terminal_write', {
     sessionId: exec.sessionId,
     data: `& node "${ticker}"`,
     newline: true,
   })
   await sleep(600)
-  const during = tools.has('terminal_state') ? await call('terminal_state', { sessionId: exec.sessionId }) : null
+  const during = tools.has('background_terminal_state') ? await call('background_terminal_state', { sessionId: exec.sessionId }) : null
   if (during) {
     console.log('\n⑥ 长任务运行中的状态 →', JSON.stringify({
       phase: during.phase, outputBytes: during.outputBytes, lastOutputAgoMs: during.lastOutputAgoMs,
@@ -246,22 +246,22 @@ const main = async () => {
   }
   const before = during?.outputBytes ?? 0
   await sleep(1400)
-  const after = await call('terminal_read', { sessionId: exec.sessionId })
+  const after = await call('background_terminal_read', { sessionId: exec.sessionId })
   allOutput += String(after.text ?? '')
   check('⑥ 任务期间仍有输出可读（TICK）', /TICK/.test(allOutput), true)
   if (during) {
     // 顺序很重要：先读正文**再**取状态，否则状态里的字节数已经被更早的读取消费过
-    const later = await call('terminal_state', { sessionId: exec.sessionId })
+    const later = await call('background_terminal_state', { sessionId: exec.sessionId })
     console.log('   1.4s 后 →', JSON.stringify({ outputBytes: later.outputBytes, lastOutputAgoMs: later.lastOutputAgoMs }))
     check('⑥ outputBytes 在增长（正面活动信号）', later.outputBytes > before, true)
   }
-  await call('terminal_write', { sessionId: exec.sessionId, data: '\u0003Write-Output "TICKER_STOPPED"', newline: true })
+  await call('background_terminal_write', { sessionId: exec.sessionId, data: '\u0003Write-Output "TICKER_STOPPED"', newline: true })
   await sleep(600)
 
   // ⑦ 关闭会话并确认
-  await call('terminal_signal', { sessionId: exec.sessionId, close: true })
+  await call('background_terminal_signal', { sessionId: exec.sessionId, close: true })
   await sleep(500)
-  const finalRead = await call('terminal_read', { sessionId: exec.sessionId }).catch((e) => ({ error: String(e.message) }))
+  const finalRead = await call('background_terminal_read', { sessionId: exec.sessionId }).catch((e) => ({ error: String(e.message) }))
   check('⑦ 会话已收口', ['killed', 'exited'].includes(finalRead.status), true)
 
   rmSync(WORKDIR, { recursive: true, force: true })
